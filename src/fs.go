@@ -98,12 +98,10 @@ func (f File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadRe
 
 // Write appends data via the layer manager. We require that writes are at the end of the file.
 func (f File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	// Ignore req.Offset to always append at the end of the file.
-	// This is necessary because shell commands using O_APPEND expect the data to be appended
-	// to the end of the file regardless of the offset provided in the write request.
-	// By ignoring req.Offset, we ensure that the data is always appended to the end,
-	// which fixes the issue with O_APPEND writes from shell commands.
-	_, _ = globalLM.Write(req.Data)
+	_, _, err := globalLM.Write(req.Data, uint64(req.Offset))
+	if err != nil {
+		return fmt.Errorf("failed to write data: %v", err)
+	}
 	resp.Size = len(req.Data)
 	return nil
 }

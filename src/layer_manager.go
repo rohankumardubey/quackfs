@@ -1,8 +1,6 @@
 package main
 
-import (
-	"sort"
-)
+import "slices"
 
 // Layer represents an in-memory layer storing appended data.
 type Layer struct {
@@ -88,51 +86,60 @@ func (lm *LayerManager) SealActiveLayer() error {
 	return lm.metadata.RecordNewLayer(newLayer)
 }
 
-// Write writes data to the active layer at the current global offset.
+// Write writes data to the active layer at the specified global offset.
 // It returns the active layer's ID and the offset where the data was written.
-func (lm *LayerManager) Write(data []byte) (layerID int, offset uint64) {
+func (lm *LayerManager) Write(data []byte, offset uint64) (layerID int, writtenOffset uint64, err error) {
 	active := lm.ActiveLayer()
-	offset = lm.globalOffset
-	active.entries[offset] = data
+
+	// Use the requested offset
+	writtenOffset = offset
+	active.entries[writtenOffset] = data
 
 	// Calculate the ranges for this data entry
 	dataLength := uint64(len(data))
 
 	// Layer range is relative to the layer's base offset
-	layerStart := offset - active.base
+	// Ensure we don't have underflow when calculating layer-relative offset
+	var layerStart uint64
+	if writtenOffset >= active.base {
+		layerStart = writtenOffset - active.base
+	} else {
+		// This shouldn't happen with proper layer management
+		// but protect against potential underflow
+		layerStart = 0
+	}
+
 	layerEnd := layerStart + dataLength
 	layerRange := [2]uint64{layerStart, layerEnd}
 
 	// File range is the global offset range
-	fileStart := offset
-	fileEnd := offset + dataLength
+	fileStart := writtenOffset
+	fileEnd := writtenOffset + dataLength
 	fileRange := [2]uint64{fileStart, fileEnd}
 
 	// Persist the entry with range information
-	if err := lm.metadata.RecordEntry(active.ID, offset, data, layerRange, fileRange); err != nil {
-		// In a real system, handle the error.
+	if err = lm.metadata.RecordEntry(active.ID, writtenOffset, data, layerRange, fileRange); err != nil {
+		return 0, 0, err
 	}
-	lm.globalOffset += uint64(len(data))
-	return active.ID, offset
+	lm.globalOffset = max(lm.globalOffset, writtenOffset+dataLength)
+	return active.ID, writtenOffset, nil
 }
 
-// GetFullContent merges all writes in order of layers and, within each layer, by increasing offset.
-// This simply concatenates the data from each write without performing offset-based copy.
+// Updated GetFullContent to merge layers with overlay semantics.
 func (lm *LayerManager) GetFullContent() []byte {
-	var content []byte
+	buf := make([]byte, lm.globalOffset)
 	for _, layer := range lm.layers {
-		// Collect and sort the offsets for this layer.
 		var offsets []uint64
 		for off := range layer.entries {
 			offsets = append(offsets, off)
 		}
-		// Sort offsets in increasing order.
-		sort.Slice(offsets, func(i, j int) bool { return offsets[i] < offsets[j] })
+		slices.Sort(offsets)
 		for _, off := range offsets {
-			content = append(content, layer.entries[off]...)
+			data := layer.entries[off]
+			copy(buf[off:off+uint64(len(data))], data)
 		}
 	}
-	return content
+	return buf
 }
 
 // GetDataRange returns a slice of data from the given offset up to size bytes.
@@ -143,4 +150,11 @@ func (lm *LayerManager) GetDataRange(offset uint64, size uint64) ([]byte, error)
 	}
 	end := min(offset+uint64(size), uint64(len(full)))
 	return full[offset:end], nil
+}
+
+func max(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
 }

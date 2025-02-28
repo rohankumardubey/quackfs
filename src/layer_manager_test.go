@@ -42,7 +42,10 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	}
 
 	input := []byte("hello world")
-	layerID, offset := lm.Write(input)
+	layerID, offset, err := lm.Write(input, 0)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
 
 	if offset != uint64(0) {
 		t.Fatalf("Expected initial write offset to be 0, got %d", offset)
@@ -76,7 +79,10 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 	}
 
 	input1 := []byte("data1")
-	layerID1, offset1 := lm.Write(input1)
+	layerID1, offset1, err := lm.Write(input1, 0)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
 	if offset1 != uint64(0) {
 		t.Fatalf("Expected first write offset in active layer to be 0, got %d", offset1)
 	}
@@ -95,7 +101,10 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 	}
 
 	input2 := []byte("data2")
-	layerID2, offset2 := lm.Write(input2)
+	layerID2, offset2, err := lm.Write(input2, expectedBase)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
 	if layerID2 == layerID1 {
 		t.Fatalf("New write went to the sealed layer instead of the new active layer")
 	}
@@ -122,16 +131,22 @@ func TestReadFromSealedLayer(t *testing.T) {
 	}
 
 	input1 := []byte("old data")
-	_, offset1 := lm.Write(input1)
+	_, offset1, err := lm.Write(input1, 0)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
 
 	if err := lm.SealActiveLayer(); err != nil {
 		t.Fatalf("SealActiveLayer failed: %v", err)
 	}
 
 	input2 := []byte("new data")
-	_, offset2 := lm.Write(input2)
-
 	expectedOffset2 := uint64(len(input1))
+	_, offset2, err := lm.Write(input2, expectedOffset2)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
 	if offset2 != expectedOffset2 {
 		t.Fatalf("Expected new write offset to be %d, got %d", expectedOffset2, offset2)
 	}
@@ -163,7 +178,10 @@ func TestPartialRead(t *testing.T) {
 	}
 
 	input := []byte("partial read test")
-	_, offset := lm.Write(input)
+	_, offset, err := lm.Write(input, 0)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
 
 	partialSize := uint64(7)
 	data, err := lm.GetDataRange(offset, partialSize)

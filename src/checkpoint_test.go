@@ -35,7 +35,10 @@ func TestExampleWorkflow(t *testing.T) {
 
 	// Write initial data.
 	data1 := []byte("Hello, checkpoint!")
-	_, offset1 := lm.Write(data1)
+	_, offset1, err := lm.Write(data1, 0)
+	if err != nil {
+		t.Fatalf("Failed to write initial data: %v", err)
+	}
 	if offset1 != 0 {
 		t.Fatalf("Expected first write offset to be 0, got %d", offset1)
 	}
@@ -45,8 +48,11 @@ func TestExampleWorkflow(t *testing.T) {
 
 	// Write additional data.
 	data2 := []byte("More data after checkpoint.")
-	_, offset2 := lm.Write(data2)
 	expectedOffset2 := uint64(len(data1))
+	_, offset2, err := lm.Write(data2, expectedOffset2)
+	if err != nil {
+		t.Fatalf("Failed to write additional data: %v", err)
+	}
 	if offset2 != expectedOffset2 {
 		t.Fatalf("Expected second write offset to be %d, got %d", expectedOffset2, offset2)
 	}
