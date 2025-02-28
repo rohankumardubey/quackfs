@@ -7,6 +7,7 @@ import (
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	log "github.com/charmbracelet/log"
 )
 
 // FS implements the FUSE filesystem.
@@ -32,11 +33,14 @@ func init() {
 	if err != nil {
 		panic(fmt.Sprintf("failed to create metadata store: %v", err))
 	}
+	log.Info("Metadata store created successfully")
 
 	lm, err := NewLayerManager(ms)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create layer manager: %v", err))
 	}
+	log.Info("Layer manager created successfully")
+
 	globalLM = lm
 }
 

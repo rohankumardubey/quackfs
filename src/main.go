@@ -4,21 +4,42 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	log "github.com/charmbracelet/log"
 )
 
 func main() {
+	// Set log level from environment variable
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel != "" {
+		level, err := log.ParseLevel(logLevel)
+		if err == nil {
+			log.SetLevel(level)
+		}
+	}
+
 	mountpoint := flag.String("mount", "", "Mount point for the FUSE filesystem")
 	flag.Parse()
 
 	if *mountpoint == "" {
-		fmt.Println("Usage: ./difffs -mount <mountpoint>")
+		log.Info("Usage: ./difffs -mount <mountpoint>")
 		os.Exit(1)
 	}
+
+	fmt.Println(`
+
+██████╗░██╗███████╗███████╗███████╗░██████╗
+██╔══██╗██║██╔════╝██╔════╝██╔════╝██╔════╝
+██║░░██║██║█████╗░░█████╗░░█████╗░░╚█████╗░
+██║░░██║██║██╔══╝░░██╔══╝░░██╔══╝░░░╚═══██╗
+██████╔╝██║██║░░░░░██║░░░░░██║░░░░░██████╔╝
+╚═════╝░╚═╝╚═╝░░░░░╚═╝░░░░░╚═╝░░░░░╚═════╝░
+Differential Storage System
+
+	`)
 
 	// Start a goroutine to listen for keypresses.
 	go func() {
@@ -41,9 +62,9 @@ func main() {
 	}
 	defer c.Close()
 
-	fmt.Println("FUSE filesystem mounted at", *mountpoint)
-	fmt.Println("Press 'c' to trigger a checkpoint")
-	fmt.Println("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
+	log.Info("FUSE filesystem mounted at", *mountpoint)
+	log.Info("Press 'c' to trigger a checkpoint")
+	log.Info("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
 
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
 	if err := fs.Serve(c, FS{}); err != nil {

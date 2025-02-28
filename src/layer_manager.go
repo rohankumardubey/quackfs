@@ -1,6 +1,10 @@
 package main
 
-import "slices"
+import (
+	"slices"
+
+	log "github.com/charmbracelet/log"
+)
 
 // Layer represents an in-memory layer storing appended data.
 type Layer struct {
@@ -89,6 +93,7 @@ func (lm *LayerManager) SealActiveLayer() error {
 // Write writes data to the active layer at the specified global offset.
 // It returns the active layer's ID and the offset where the data was written.
 func (lm *LayerManager) Write(data []byte, offset uint64) (layerID int, writtenOffset uint64, err error) {
+	log.Debugf("Writing data (size %d bytes) at offset %d", len(data), offset)
 	active := lm.ActiveLayer()
 
 	// Use the requested offset
@@ -119,9 +124,11 @@ func (lm *LayerManager) Write(data []byte, offset uint64) (layerID int, writtenO
 
 	// Persist the entry with range information
 	if err = lm.metadata.RecordEntry(active.ID, writtenOffset, data, layerRange, fileRange); err != nil {
+		log.Errorf("Failed to record entry: %v", err)
 		return 0, 0, err
 	}
 	lm.globalOffset = max(lm.globalOffset, writtenOffset+dataLength)
+	log.Debugf("Data written successfully at offset %d", writtenOffset)
 	return active.ID, writtenOffset, nil
 }
 
