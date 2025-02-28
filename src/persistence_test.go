@@ -161,8 +161,8 @@ func TestFuseScenario(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	// The file should be available at mountDir/dummy.txt
-	filePath := filepath.Join(mountDir, "dummy.txt")
+	// The file should be available at mountDir/db.duckdb
+	filePath := filepath.Join(mountDir, "db.duckdb")
 
 	// Open the file in append mode
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)

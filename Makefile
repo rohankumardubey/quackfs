@@ -13,7 +13,7 @@ clean:
 	rm -f difffs
 	rm -rf /tmp/fuse
 
-db-init:
+db.init:
 	@echo "Setting up PostgreSQL database if not already running"
 	@sudo service postgresql status > /dev/null || sudo service postgresql start
 	@for i in {1..10}; do pg_isready -h localhost && break || sleep 1; done
@@ -25,7 +25,7 @@ db-init:
 		echo "Database difffs already exists"; \
 	fi
 
-db-clean:
+db.clean:
 	@echo "Cleaning PostgreSQL database"
 	@psql -U postgres -c "DROP DATABASE IF EXISTS difffs;" || true
 	@psql -U postgres -c "CREATE DATABASE difffs;"

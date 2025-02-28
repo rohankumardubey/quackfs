@@ -53,7 +53,7 @@ func TestFuseReadWrite(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Open the file for read/write.
-	filePath := filepath.Join(mountDir, "dummy.txt")
+	filePath := filepath.Join(mountDir, "db.duckdb")
 	f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open file %s: %v", filePath, err)
