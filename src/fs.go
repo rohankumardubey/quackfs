@@ -113,3 +113,7 @@ func (f File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Writ
 func (f File) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
 	return nil
 }
+
+func (f File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
+	return nil
+}

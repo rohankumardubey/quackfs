@@ -171,23 +171,17 @@ func TestFuseScenario(t *testing.T) {
 	}
 	defer f.Close()
 
-	// Helper to read file content
-	readContent := func() []byte {
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			t.Fatalf("Failed to read file %s: %v", filePath, err)
-		}
-		return data
-	}
-
 	// Write "hello\n" to the file
 	if _, err := f.WriteString("hello\n"); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	f.Sync()
 
 	expected1 := []byte("hello\n")
-	if got := readContent(); !bytes.Equal(got, expected1) {
+	got, err := lmTest.GetDataRange(0, uint64(len(expected1)))
+	if err != nil {
+		t.Fatalf("Error getting full content: %v", err)
+	}
+	if !bytes.Equal(got, expected1) {
 		t.Fatalf("After first write, expected %q, got %q", expected1, got)
 	}
 
@@ -195,10 +189,14 @@ func TestFuseScenario(t *testing.T) {
 	if _, err := f.WriteString("hello world\n"); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	f.Sync()
+
 	time.Sleep(500 * time.Millisecond)
 	expected2 := []byte("hello\nhello world\n")
-	if got := readContent(); !bytes.Equal(got, expected2) {
+	got, err = lmTest.GetDataRange(0, uint64(len(expected2)))
+	if err != nil {
+		t.Fatalf("Error getting full content: %v", err)
+	}
+	if !bytes.Equal(got, expected2) {
 		t.Fatalf("After second write, expected %q, got %q", expected2, got)
 	}
 
@@ -206,10 +204,14 @@ func TestFuseScenario(t *testing.T) {
 	if _, err := f.WriteString("hel\n"); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	f.Sync()
+
 	time.Sleep(500 * time.Millisecond)
 	expectedFinal := []byte("hello\nhello world\nhel\n")
-	if got := readContent(); !bytes.Equal(got, expectedFinal) {
+	got, err = lmTest.GetDataRange(0, uint64(len(expectedFinal)))
+	if err != nil {
+		t.Fatalf("Error getting full content: %v", err)
+	}
+	if !bytes.Equal(got, expectedFinal) {
 		t.Fatalf("After third write, expected %q, got %q", expectedFinal, got)
 	}
 }
