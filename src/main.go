@@ -41,6 +41,10 @@ func main() {
 	}
 	defer c.Close()
 
+	fmt.Println("FUSE filesystem mounted at", *mountpoint)
+	fmt.Println("Press 'c' to trigger a checkpoint")
+	fmt.Println("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
+
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
 	if err := fs.Serve(c, FS{}); err != nil {
 		log.Fatalf("Failed to serve FUSE FS: %v", err)

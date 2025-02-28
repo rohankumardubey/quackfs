@@ -12,6 +12,12 @@ import (
 )
 
 func TestFuseReadWrite(t *testing.T) {
+	// Fail if PostgreSQL connection isn't available for testing
+	connStr := os.Getenv("POSTGRES_TEST_CONN")
+	if connStr == "" {
+		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
+	}
+
 	// Create a temporary mount directory.
 	mountDir, err := os.MkdirTemp("", "fusemnt")
 	if err != nil {
@@ -27,8 +33,18 @@ func TestFuseReadWrite(t *testing.T) {
 	}
 	defer os.Remove(binaryPath)
 
+	// Set environment variables for the test process
+	env := os.Environ()
+	env = append(env, "POSTGRES_TEST_CONN="+connStr)
+	env = append(env, "POSTGRES_HOST="+os.Getenv("POSTGRES_HOST"))
+	env = append(env, "POSTGRES_PORT="+os.Getenv("POSTGRES_PORT"))
+	env = append(env, "POSTGRES_USER="+os.Getenv("POSTGRES_USER"))
+	env = append(env, "POSTGRES_PASSWORD="+os.Getenv("POSTGRES_PASSWORD"))
+	env = append(env, "POSTGRES_DB="+os.Getenv("POSTGRES_DB"))
+
 	// Start the FUSE filesystem process.
 	cmd := exec.Command(binaryPath, "-mount", mountDir)
+	cmd.Env = env
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start FUSE FS: %v", err)
 	}

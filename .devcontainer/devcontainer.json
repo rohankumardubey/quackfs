@@ -9,34 +9,11 @@
             "userUid": "1000",
             "userGid": "1000"
         },
-        "ghcr.io/devcontainers/features/dotnet:2": {
-            "version": "8.0",
-            "dotnetRuntimeVersions": "7.0", 
-            "aspNetCoreRuntimeVersions": "7.0"
-        },
-        "ghcr.io/devcontainers/features/hugo:1": {
-            "version": "latest"
-        },
         "ghcr.io/devcontainers/features/node:1": {
             "version": "20",
             "additionalVersions": "18"
         },
         "./local-features/nvs": "latest",
-        "ghcr.io/devcontainers/features/php:1": {
-            "version": "8.3.0",
-            "additionalVersions": "8.2.13",
-            "installComposer": "true"
-        },
-        "ghcr.io/devcontainers/features/ruby:1": {
-            "version": "3.3.4",
-            "additionalVersions": "3.3.2"
-        },
-        "ghcr.io/devcontainers/features/java:1": {
-            "version": "21",
-            "additionalVersions": "17",
-            "installGradle": "true",
-            "installMaven": "true"
-        },
         "ghcr.io/devcontainers/features/sshd:1": {
             "version": "latest"
         },
@@ -59,35 +36,41 @@
         "ghcr.io/devcontainers/features/go:1": {
             "version": "latest"
         },
-        "./local-features/jekyll": "latest",
         "ghcr.io/devcontainers/features/oryx:1": "latest",
         "./local-features/setup-user": "latest"
     },
     "overrideFeatureInstallOrder": [
         "ghcr.io/devcontainers/features/common-utils",
         "ghcr.io/devcontainers/features/git",
-        "ghcr.io/devcontainers/features/dotnet",
-        "ghcr.io/devcontainers/features/hugo",
         "ghcr.io/devcontainers/features/node",
         "./local-features/nvs",
-        "ghcr.io/devcontainers/features/php",
-        "ghcr.io/devcontainers/features/ruby",
-        "ghcr.io/devcontainers/features/java",
         "ghcr.io/devcontainers/features/sshd",
         "ghcr.io/devcontainers/features/git-lfs",
         "ghcr.io/devcontainers/features/github-cli",
         "ghcr.io/devcontainers/features/docker-in-docker",
         "ghcr.io/devcontainers/features/kubectl-helm-minikube",
         "ghcr.io/devcontainers/features/go",
-        "./local-features/jekyll",
         "ghcr.io/devcontainers/features/oryx",
         "./local-features/setup-user"
     ],
     "remoteUser": "codespace",
     "containerUser": "codespace",
 
+    // Environment variables for PostgreSQL
+    "containerEnv": {
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432", 
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "password",
+        "POSTGRES_DB": "difffs",
+        "POSTGRES_TEST_CONN": "postgres://postgres:password@localhost/difffs?sslmode=disable"
+    },
+
+    // Set up PostgreSQL startup script
+    "postStartCommand": "sudo chmod +x ${containerWorkspaceFolder}/.devcontainer/postgresql-init.sh && sudo ${containerWorkspaceFolder}/.devcontainer/postgresql-init.sh",
+
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
-    // "forwardPorts": [],
+    "forwardPorts": [5432],
 
     // Configure tool-specific properties.
     "customizations": {
@@ -102,7 +85,8 @@
             },
             // Add the IDs of extensions you want installed when the container is created.
             "extensions": [
-                "GitHub.vscode-pull-request-github"
+                "GitHub.vscode-pull-request-github",
+                "ckolkman.vscode-postgres"
             ]
         }
     }

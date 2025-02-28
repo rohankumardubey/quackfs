@@ -2,16 +2,31 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"testing"
 )
 
 func TestExampleWorkflow(t *testing.T) {
-	// Use an in-memory SQLite database for testing.
-	ms, err := NewMetadataStore(":memory:")
+	// Fail if PostgreSQL connection string is not available
+	connStr := os.Getenv("POSTGRES_TEST_CONN")
+	if connStr == "" {
+		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
+	}
+
+	ms, err := NewMetadataStore(connStr)
 	if err != nil {
 		t.Fatalf("Failed to create metadata store: %v", err)
 	}
-	defer ms.Close()
+
+	// Clean up existing test data
+	_, _ = ms.db.Exec("DELETE FROM entries")
+	_, _ = ms.db.Exec("DELETE FROM layers")
+
+	defer func() {
+		_, _ = ms.db.Exec("DELETE FROM entries")
+		_, _ = ms.db.Exec("DELETE FROM layers")
+		ms.Close()
+	}()
 
 	lm, err := NewLayerManager(ms)
 	if err != nil {

@@ -14,18 +14,38 @@ type FS struct{}
 
 var globalLM *LayerManager
 
-// init initializes the global layer manager using a file-based metadata store.
-// In a production system you may use a proper path; here we use "metadata.sqlite" in the working directory.
+// init initializes the global layer manager using a PostgreSQL metadata store.
+// The connection string is constructed from environment variables or defaults to a local connection.
 func init() {
-	ms, err := NewMetadataStore("metadata.sqlite")
+	// Get PostgreSQL connection details from environment variables or use defaults
+	host := getEnvOrDefault("POSTGRES_HOST", "localhost")
+	port := getEnvOrDefault("POSTGRES_PORT", "5432")
+	user := getEnvOrDefault("POSTGRES_USER", "postgres")
+	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
+	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
+
+	// Construct the connection string
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbname)
+
+	ms, err := NewMetadataStore(connStr)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create metadata store: %v", err))
 	}
+
 	lm, err := NewLayerManager(ms)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create layer manager: %v", err))
 	}
 	globalLM = lm
+}
+
+// getEnvOrDefault returns the environment variable value or a default if not set
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
 }
 
 func (FS) Root() (fs.Node, error) {

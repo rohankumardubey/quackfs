@@ -2,12 +2,13 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 )
 
-// MetadataStore manages persistent layer metadata using SQLite.
+// MetadataStore manages persistent layer metadata using PostgreSQL.
 type MetadataStore struct {
 	db *sql.DB
 }
@@ -27,11 +28,17 @@ type EntryRecord struct {
 	Data    []byte
 }
 
-// NewMetadataStore opens (or creates) a SQLite database at dbPath and initializes the tables.
-func NewMetadataStore(dbPath string) (*MetadataStore, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+// NewMetadataStore opens a PostgreSQL database connection and initializes the tables.
+// The connStr should be a PostgreSQL connection string in keyword/value format:
+// "host=localhost port=5432 user=postgres password=postgres dbname=difffs sslmode=disable"
+// Alternatively, URL format is also supported: "postgres://username:password@localhost/dbname?sslmode=disable"
+func NewMetadataStore(connStr string) (*MetadataStore, error) {
+	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, err
+	}
+	if err = db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 	ms := &MetadataStore{db: db}
 	if err := ms.init(); err != nil {
@@ -46,18 +53,18 @@ func (ms *MetadataStore) init() error {
 	layerTable := `
 	CREATE TABLE IF NOT EXISTS layers (
 		id INTEGER PRIMARY KEY,
-		base INTEGER NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		base BIGINT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		sealed INTEGER DEFAULT 0
 	);
 	`
-	// Create entries table.
+	// Create entries table with proper index creation
 	entryTable := `
 	CREATE TABLE IF NOT EXISTS entries (
-		layer_id INTEGER NOT NULL,
-		offset INTEGER NOT NULL,
-		data BLOB NOT NULL,
-		PRIMARY KEY (layer_id, offset)
+		layer_id INTEGER REFERENCES layers(id),
+		offset_value BIGINT NOT NULL,
+		data BYTEA NOT NULL,
+		PRIMARY KEY (layer_id, offset_value)
 	);
 	`
 	if _, err := ms.db.Exec(layerTable); err != nil {
@@ -71,21 +78,21 @@ func (ms *MetadataStore) init() error {
 
 // RecordNewLayer inserts a new layer record.
 func (ms *MetadataStore) RecordNewLayer(layer *Layer) error {
-	query := `INSERT INTO layers (id, base, sealed) VALUES (?, ?, 0);`
+	query := `INSERT INTO layers (id, base, sealed) VALUES ($1, $2, 0);`
 	_, err := ms.db.Exec(query, layer.ID, layer.base)
 	return err
 }
 
 // SealLayer marks the layer with the given id as sealed.
 func (ms *MetadataStore) SealLayer(layerID int) error {
-	query := `UPDATE layers SET sealed = 1 WHERE id = ?;`
+	query := `UPDATE layers SET sealed = 1 WHERE id = $1;`
 	_, err := ms.db.Exec(query, layerID)
 	return err
 }
 
 // RecordEntry inserts a new entry record.
 func (ms *MetadataStore) RecordEntry(layerID int, offset int64, data []byte) error {
-	query := `INSERT INTO entries (layer_id, offset, data) VALUES (?, ?, ?);`
+	query := `INSERT INTO entries (layer_id, offset_value, data) VALUES ($1, $2, $3);`
 	_, err := ms.db.Exec(query, layerID, offset, data)
 	return err
 }
@@ -126,7 +133,7 @@ func (ms *MetadataStore) LoadLayers() ([]*Layer, int, int64, error) {
 
 // LoadEntries loads all entry records from the database and groups them by layer_id.
 func (ms *MetadataStore) LoadEntries() (map[int][]EntryRecord, error) {
-	query := `SELECT layer_id, offset, data FROM entries;`
+	query := `SELECT layer_id, offset_value, data FROM entries;`
 	rows, err := ms.db.Query(query)
 	if err != nil {
 		return nil, err

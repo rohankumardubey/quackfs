@@ -42,38 +42,6 @@ ln -snf /usr/local/oryx/* /opt/oryx
 NODE_PATH="/home/codespace/nvm/current"
 ln -snf /usr/local/share/nvm /home/codespace
 
-PHP_PATH="/home/${USERNAME}/.php/current"
-mkdir -p /home/${USERNAME}/.php
-ln -snf /usr/local/php/current $PHP_PATH
-
-JAVA_PATH="/home/codespace/java/current"
-ln -snf /usr/local/sdkman/candidates/java /home/codespace
-
-RUBY_PATH="/home/${USERNAME}/.ruby/current"
-mkdir -p /home/${USERNAME}/.ruby
-ln -snf /usr/local/rvm/rubies/default $RUBY_PATH
-
-DOTNET_PATH="/home/${USERNAME}/.dotnet"
-
-# Required due to https://github.com/devcontainers/features/pull/628/files#r1276659825
-chown -R "${USERNAME}:${USERNAME}" /usr/share/dotnet
-chmod g+r+w+s /usr/share/dotnet
-chmod -R g+r+w /usr/share/dotnet
-
-ln -snf /usr/share/dotnet $DOTNET_PATH
-mkdir -p /opt/dotnet/lts
-cp -R /usr/share/dotnet/dotnet /opt/dotnet/lts
-cp -R /usr/share/dotnet/LICENSE.txt /opt/dotnet/lts
-cp -R /usr/share/dotnet/ThirdPartyNotices.txt /opt/dotnet/lts
-
-MAVEN_PATH="/home/${USERNAME}/.maven/current"
-mkdir -p /home/${USERNAME}/.maven
-ln -snf /usr/local/sdkman/candidates/maven/current $MAVEN_PATH
-
-HUGO_ROOT="/home/${USERNAME}/.hugo/current"
-mkdir -p /home/${USERNAME}/.hugo
-ln -snf /usr/local/hugo $HUGO_ROOT
-
 HOME_DIR="/home/${USERNAME}/"
 chown -R ${USERNAME}:${USERNAME} ${HOME_DIR}
 chmod -R g+r+w "${HOME_DIR}"
@@ -84,7 +52,7 @@ chown -R ${USERNAME}:oryx ${OPT_DIR}
 chmod -R g+r+w "${OPT_DIR}"
 find "${OPT_DIR}" -type d | xargs -n 1 chmod g+s
 
-echo "Defaults secure_path=\"${DOTNET_PATH}:${NODE_PATH}/bin:${PHP_PATH}/bin:${JAVA_PATH}/bin:${RUBY_PATH}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin:/usr/local/share:/home/${USERNAME}/.local/bin:${PATH}\"" >> /etc/sudoers.d/$USERNAME
+echo "Defaults secure_path=\"${NODE_PATH}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin:/usr/local/share:/home/${USERNAME}/.local/bin:${PATH}\"" >> /etc/sudoers.d/$USERNAME
 
 # Temporary: Due to GHSA-c2qf-rxjj-qqgw
 bash -c ". /usr/local/share/nvm/nvm.sh && nvm use 18"

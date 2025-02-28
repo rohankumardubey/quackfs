@@ -2,15 +2,39 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"testing"
 )
 
-func TestWriteReadActiveLayer(t *testing.T) {
-	ms, err := NewMetadataStore(":memory:")
-	if err != nil {
-		t.Fatalf("Failed to create metadata store: %v", err)
+// createTestMetadataStore creates a metadata store for testing using PostgreSQL
+func createTestMetadataStore(t *testing.T) (*MetadataStore, func()) {
+	connStr := os.Getenv("POSTGRES_TEST_CONN")
+	if connStr == "" {
+		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
 	}
-	defer ms.Close()
+
+	ms, err := NewMetadataStore(connStr)
+	if err != nil {
+		t.Fatalf("Failed to create PostgreSQL metadata store: %v", err)
+	}
+
+	// Clean up existing test data
+	_, _ = ms.db.Exec("DELETE FROM entries")
+	_, _ = ms.db.Exec("DELETE FROM layers")
+
+	// Return cleanup function
+	cleanup := func() {
+		_, _ = ms.db.Exec("DELETE FROM entries")
+		_, _ = ms.db.Exec("DELETE FROM layers")
+		ms.Close()
+	}
+
+	return ms, cleanup
+}
+
+func TestWriteReadActiveLayer(t *testing.T) {
+	ms, cleanup := createTestMetadataStore(t)
+	defer cleanup()
 
 	lm, err := NewLayerManager(ms)
 	if err != nil {
@@ -43,11 +67,8 @@ func TestWriteReadActiveLayer(t *testing.T) {
 }
 
 func TestSealLayerNewActiveLayer(t *testing.T) {
-	ms, err := NewMetadataStore(":memory:")
-	if err != nil {
-		t.Fatalf("Failed to create metadata store: %v", err)
-	}
-	defer ms.Close()
+	ms, cleanup := createTestMetadataStore(t)
+	defer cleanup()
 
 	lm, err := NewLayerManager(ms)
 	if err != nil {
@@ -92,11 +113,8 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 }
 
 func TestReadFromSealedLayer(t *testing.T) {
-	ms, err := NewMetadataStore(":memory:")
-	if err != nil {
-		t.Fatalf("Failed to create metadata store: %v", err)
-	}
-	defer ms.Close()
+	ms, cleanup := createTestMetadataStore(t)
+	defer cleanup()
 
 	lm, err := NewLayerManager(ms)
 	if err != nil {
@@ -136,11 +154,8 @@ func TestReadFromSealedLayer(t *testing.T) {
 }
 
 func TestPartialRead(t *testing.T) {
-	ms, err := NewMetadataStore(":memory:")
-	if err != nil {
-		t.Fatalf("Failed to create metadata store: %v", err)
-	}
-	defer ms.Close()
+	ms, cleanup := createTestMetadataStore(t)
+	defer cleanup()
 
 	lm, err := NewLayerManager(ms)
 	if err != nil {
