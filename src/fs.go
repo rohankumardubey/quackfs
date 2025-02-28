@@ -88,7 +88,7 @@ func (File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResp
 }
 
 func (f File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
-	data, err := globalLM.GetDataRange(req.Offset, req.Size)
+	data, err := globalLM.GetDataRange(uint64(req.Offset), uint64(req.Size))
 	if err != nil {
 		return err
 	}

@@ -46,7 +46,7 @@ func TestLayerManagerPersistence(t *testing.T) {
 	// Write more data in new active layer
 	data2 := []byte("persistent data 2")
 	_, offset2 := lm.Write(data2)
-	expectedOffset2 := int64(len(data1))
+	expectedOffset2 := uint64(len(data1))
 	if offset2 != expectedOffset2 {
 		t.Fatalf("Expected second write offset to be %d, got %d", expectedOffset2, offset2)
 	}
@@ -75,7 +75,7 @@ func TestLayerManagerPersistence(t *testing.T) {
 	}
 
 	// Verify that old data is still present
-	read1, err := lm2.GetDataRange(offset1, len(data1))
+	read1, err := lm2.GetDataRange(offset1, uint64(len(data1)))
 	if err != nil {
 		t.Fatalf("Error reading data1 after reload: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestLayerManagerPersistence(t *testing.T) {
 	}
 
 	// Verify that new data is present
-	read2, err := lm2.GetDataRange(offset2, len(data2))
+	read2, err := lm2.GetDataRange(offset2, uint64(len(data2)))
 	if err != nil {
 		t.Fatalf("Error reading data2 after reload: %v", err)
 	}

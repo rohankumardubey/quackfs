@@ -44,7 +44,7 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	input := []byte("hello world")
 	layerID, offset := lm.Write(input)
 
-	if offset != 0 {
+	if offset != uint64(0) {
 		t.Fatalf("Expected initial write offset to be 0, got %d", offset)
 	}
 
@@ -53,7 +53,7 @@ func TestWriteReadActiveLayer(t *testing.T) {
 		t.Fatalf("Expected full content length %d, got %d", len(input), len(fullContent))
 	}
 
-	data, err := lm.GetDataRange(offset, len(input))
+	data, err := lm.GetDataRange(offset, uint64(len(input)))
 	if err != nil {
 		t.Fatalf("GetDataRange error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 
 	input1 := []byte("data1")
 	layerID1, offset1 := lm.Write(input1)
-	if offset1 != 0 {
+	if offset1 != uint64(0) {
 		t.Fatalf("Expected first write offset in active layer to be 0, got %d", offset1)
 	}
 
@@ -89,7 +89,7 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 	if active.ID == layerID1 {
 		t.Fatalf("Active layer did not change after sealing")
 	}
-	expectedBase := int64(len(input1))
+	expectedBase := uint64(len(input1))
 	if active.base != expectedBase {
 		t.Fatalf("Expected new active layer base to be %d, got %d", expectedBase, active.base)
 	}
@@ -103,7 +103,7 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 		t.Fatalf("Expected new layer's first write offset to be %d, got %d", expectedBase, offset2)
 	}
 
-	data, err := lm.GetDataRange(offset2, len(input2))
+	data, err := lm.GetDataRange(offset2, uint64(len(input2)))
 	if err != nil {
 		t.Fatalf("GetDataRange error: %v", err)
 	}
@@ -131,12 +131,12 @@ func TestReadFromSealedLayer(t *testing.T) {
 	input2 := []byte("new data")
 	_, offset2 := lm.Write(input2)
 
-	expectedOffset2 := int64(len(input1))
+	expectedOffset2 := uint64(len(input1))
 	if offset2 != expectedOffset2 {
 		t.Fatalf("Expected new write offset to be %d, got %d", expectedOffset2, offset2)
 	}
 
-	data, err := lm.GetDataRange(offset1, len(input1))
+	data, err := lm.GetDataRange(offset1, uint64(len(input1)))
 	if err != nil {
 		t.Fatalf("GetDataRange error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestReadFromSealedLayer(t *testing.T) {
 		t.Fatalf("Expected sealed layer data %q, got %q", input1, data)
 	}
 
-	data, err = lm.GetDataRange(offset2, len(input2))
+	data, err = lm.GetDataRange(offset2, uint64(len(input2)))
 	if err != nil {
 		t.Fatalf("GetDataRange error: %v", err)
 	}
@@ -165,12 +165,12 @@ func TestPartialRead(t *testing.T) {
 	input := []byte("partial read test")
 	_, offset := lm.Write(input)
 
-	partialSize := 7
+	partialSize := uint64(7)
 	data, err := lm.GetDataRange(offset, partialSize)
 	if err != nil {
 		t.Fatalf("GetDataRange error: %v", err)
 	}
-	if len(data) != partialSize {
+	if len(data) != int(partialSize) {
 		t.Fatalf("Expected partial read length %d, got %d", partialSize, len(data))
 	}
 	if !bytes.Equal(data, input[:partialSize]) {

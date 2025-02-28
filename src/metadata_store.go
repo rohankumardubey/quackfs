@@ -3,6 +3,8 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -23,9 +25,11 @@ type LayerMetadata struct {
 
 // EntryRecord holds data for a write entry.
 type EntryRecord struct {
-	LayerID int
-	Offset  int64
-	Data    []byte
+	LayerID    int
+	Offset     uint64
+	Data       []byte
+	LayerRange [2]uint64 // Range within a layer as an array of two integers
+	FileRange  [2]uint64 // Range within the virtual file as an array of two integers
 }
 
 // NewMetadataStore opens a PostgreSQL database connection and initializes the tables.
@@ -58,12 +62,14 @@ func (ms *MetadataStore) init() error {
 		sealed INTEGER DEFAULT 0
 	);
 	`
-	// Create entries table with proper index creation
+	// Create entries table with proper index creation and range columns
 	entryTable := `
 	CREATE TABLE IF NOT EXISTS entries (
 		layer_id INTEGER REFERENCES layers(id),
 		offset_value BIGINT NOT NULL,
 		data BYTEA NOT NULL,
+		layer_range INT8RANGE NOT NULL,
+		file_range INT8RANGE NOT NULL,
 		PRIMARY KEY (layer_id, offset_value)
 	);
 	`
@@ -91,16 +97,20 @@ func (ms *MetadataStore) SealLayer(layerID int) error {
 }
 
 // RecordEntry inserts a new entry record.
-func (ms *MetadataStore) RecordEntry(layerID int, offset int64, data []byte) error {
-	query := `INSERT INTO entries (layer_id, offset_value, data) VALUES ($1, $2, $3);`
-	_, err := ms.db.Exec(query, layerID, offset, data)
+// Now includes layer_range and file_range parameters
+func (ms *MetadataStore) RecordEntry(layerID int, offset uint64, data []byte, layerRange [2]uint64, fileRange [2]uint64) error {
+	layerRangeStr := fmt.Sprintf("[%d,%d)", layerRange[0], layerRange[1])
+	fileRangeStr := fmt.Sprintf("[%d,%d)", fileRange[0], fileRange[1])
+	query := `INSERT INTO entries (layer_id, offset_value, data, layer_range, file_range) 
+	         VALUES ($1, $2, $3, $4, $5);`
+	_, err := ms.db.Exec(query, layerID, offset, data, layerRangeStr, fileRangeStr)
 	return err
 }
 
 // LoadLayers loads all layer metadata from the database sorted by id.
 // It returns a slice of layers (with only the metadata), the next available layer id,
 // and the highest base value among layers.
-func (ms *MetadataStore) LoadLayers() ([]*Layer, int, int64, error) {
+func (ms *MetadataStore) LoadLayers() ([]*Layer, int, uint64, error) {
 	query := `SELECT id, base, sealed FROM layers ORDER BY id ASC;`
 	rows, err := ms.db.Query(query)
 	if err != nil {
@@ -110,10 +120,10 @@ func (ms *MetadataStore) LoadLayers() ([]*Layer, int, int64, error) {
 
 	var layers []*Layer
 	var maxID int
-	var maxBase int64
+	var maxBase uint64
 	for rows.Next() {
 		var id int
-		var base int64
+		var base uint64
 		var sealedInt int
 		if err := rows.Scan(&id, &base, &sealedInt); err != nil {
 			return nil, 0, 0, err
@@ -133,7 +143,7 @@ func (ms *MetadataStore) LoadLayers() ([]*Layer, int, int64, error) {
 
 // LoadEntries loads all entry records from the database and groups them by layer_id.
 func (ms *MetadataStore) LoadEntries() (map[int][]EntryRecord, error) {
-	query := `SELECT layer_id, offset_value, data FROM entries;`
+	query := `SELECT layer_id, offset_value, data, layer_range, file_range FROM entries;`
 	rows, err := ms.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -143,15 +153,54 @@ func (ms *MetadataStore) LoadEntries() (map[int][]EntryRecord, error) {
 	result := make(map[int][]EntryRecord)
 	for rows.Next() {
 		var layerID int
-		var offset int64
+		var offset uint64
 		var data []byte
-		if err := rows.Scan(&layerID, &offset, &data); err != nil {
+		var layerRangeStr, fileRangeStr sql.NullString
+
+		if err := rows.Scan(&layerID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
 			return nil, err
 		}
+
+		layerRange := [2]uint64{0, 0}
+		if layerRangeStr.Valid {
+			parts := strings.Split(strings.Trim(layerRangeStr.String, "[)"), ",")
+			if len(parts) == 2 {
+				start, err := strconv.ParseUint(parts[0], 10, 8)
+				if err != nil {
+					return nil, err
+				}
+				end, err := strconv.ParseUint(parts[1], 10, 8)
+				if err != nil {
+					return nil, err
+				}
+				layerRange[0] = start
+				layerRange[1] = end
+			}
+		}
+
+		fileRange := [2]uint64{0, 0}
+		if fileRangeStr.Valid {
+			parts := strings.Split(strings.Trim(fileRangeStr.String, "[)"), ",")
+			if len(parts) == 2 {
+				start, err := strconv.ParseUint(parts[0], 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				end, err := strconv.ParseUint(parts[1], 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				fileRange[0] = start
+				fileRange[1] = end
+			}
+		}
+
 		result[layerID] = append(result[layerID], EntryRecord{
-			LayerID: layerID,
-			Offset:  offset,
-			Data:    data,
+			LayerID:    layerID,
+			Offset:     offset,
+			Data:       data,
+			LayerRange: layerRange,
+			FileRange:  fileRange,
 		})
 	}
 	return result, nil

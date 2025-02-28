@@ -1,20 +1,22 @@
 package main
 
-import "sort"
+import (
+	"sort"
+)
 
 // Layer represents an in-memory layer storing appended data.
 type Layer struct {
 	ID      int
-	base    int64            // Global offset where this layer starts.
-	entries map[int64][]byte // Maps global offsets to data.
+	base    uint64            // Global offset where this layer starts.
+	entries map[uint64][]byte // Maps global offsets to data.
 }
 
 // NewLayer creates a new layer with the given unique ID and base offset.
-func NewLayer(id int, base int64) *Layer {
+func NewLayer(id int, base uint64) *Layer {
 	return &Layer{
 		ID:      id,
 		base:    base,
-		entries: make(map[int64][]byte),
+		entries: make(map[uint64][]byte),
 	}
 }
 
@@ -23,7 +25,7 @@ func NewLayer(id int, base int64) *Layer {
 type LayerManager struct {
 	layers       []*Layer
 	nextID       int
-	globalOffset int64
+	globalOffset uint64
 	metadata     *MetadataStore
 }
 
@@ -58,7 +60,7 @@ func NewLayerManager(store *MetadataStore) (*LayerManager, error) {
 		if entryList, ok := entries[layer.ID]; ok {
 			for _, entry := range entryList {
 				layer.entries[entry.Offset] = entry.Data
-				candidate := entry.Offset + int64(len(entry.Data))
+				candidate := entry.Offset + uint64(len(entry.Data))
 				if candidate > lm.globalOffset {
 					lm.globalOffset = candidate
 				}
@@ -88,15 +90,29 @@ func (lm *LayerManager) SealActiveLayer() error {
 
 // Write writes data to the active layer at the current global offset.
 // It returns the active layer's ID and the offset where the data was written.
-func (lm *LayerManager) Write(data []byte) (layerID int, offset int64) {
+func (lm *LayerManager) Write(data []byte) (layerID int, offset uint64) {
 	active := lm.ActiveLayer()
 	offset = lm.globalOffset
 	active.entries[offset] = data
-	// Persist the entry.
-	if err := lm.metadata.RecordEntry(active.ID, offset, data); err != nil {
+
+	// Calculate the ranges for this data entry
+	dataLength := uint64(len(data))
+
+	// Layer range is relative to the layer's base offset
+	layerStart := offset - active.base
+	layerEnd := layerStart + dataLength
+	layerRange := [2]uint64{layerStart, layerEnd}
+
+	// File range is the global offset range
+	fileStart := offset
+	fileEnd := offset + dataLength
+	fileRange := [2]uint64{fileStart, fileEnd}
+
+	// Persist the entry with range information
+	if err := lm.metadata.RecordEntry(active.ID, offset, data, layerRange, fileRange); err != nil {
 		// In a real system, handle the error.
 	}
-	lm.globalOffset += int64(len(data))
+	lm.globalOffset += uint64(len(data))
 	return active.ID, offset
 }
 
@@ -106,7 +122,7 @@ func (lm *LayerManager) GetFullContent() []byte {
 	var content []byte
 	for _, layer := range lm.layers {
 		// Collect and sort the offsets for this layer.
-		var offsets []int64
+		var offsets []uint64
 		for off := range layer.entries {
 			offsets = append(offsets, off)
 		}
@@ -120,14 +136,11 @@ func (lm *LayerManager) GetFullContent() []byte {
 }
 
 // GetDataRange returns a slice of data from the given offset up to size bytes.
-func (lm *LayerManager) GetDataRange(offset int64, size int) ([]byte, error) {
+func (lm *LayerManager) GetDataRange(offset uint64, size uint64) ([]byte, error) {
 	full := lm.GetFullContent()
-	if offset >= int64(len(full)) {
+	if offset >= uint64(len(full)) {
 		return []byte{}, nil
 	}
-	end := offset + int64(size)
-	if end > int64(len(full)) {
-		end = int64(len(full))
-	}
+	end := min(offset+uint64(size), uint64(len(full)))
 	return full[offset:end], nil
 }

@@ -46,7 +46,7 @@ func TestExampleWorkflow(t *testing.T) {
 	// Write additional data.
 	data2 := []byte("More data after checkpoint.")
 	_, offset2 := lm.Write(data2)
-	expectedOffset2 := int64(len(data1))
+	expectedOffset2 := uint64(len(data1))
 	if offset2 != expectedOffset2 {
 		t.Fatalf("Expected second write offset to be %d, got %d", expectedOffset2, offset2)
 	}
