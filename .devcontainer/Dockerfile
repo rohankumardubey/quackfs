@@ -69,8 +69,11 @@ RUN apt-get update \
     && mkdir -p "/usr/local/etc/vscode-dev-containers/" \
     && mv -f /tmp/scripts/first-run-notice.txt /usr/local/etc/vscode-dev-containers/
 
+# Install DuckDB
+RUN curl https://install.duckdb.org | sh
+
 # Default to bash shell (other shells available at /usr/bin/fish and /usr/bin/zsh)
-ENV SHELL=/bin/bash \
+ENV SHELL=/bin/zsh \
     DOCKER_BUILDKIT=1
 
 # Remove scripts now that we're done with them
