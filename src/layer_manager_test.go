@@ -39,16 +39,12 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 	require.NoError(t, err, "SealActiveLayer failed")
 
 	active := lm.ActiveLayer()
-	assert.NotEqual(t, layerID1, active.ID, "Active layer should change after sealing")
-
-	expectedBase := uint64(len(input1))
-	assert.Equal(t, expectedBase, active.base, "New active layer base should match length of first data")
+	assert.Equal(t, layerID1+1, active.ID, "Active layer should change after sealing")
 
 	input2 := []byte("data2")
-	layerID2, offset2, err := lm.Write(input2, expectedBase)
+	layerID2, offset2, err := lm.Write(input2, uint64(len(input1)))
 	require.NoError(t, err, "Write error")
-	assert.NotEqual(t, layerID1, layerID2, "New write should go to a new layer, not the sealed layer")
-	assert.Equal(t, expectedBase, offset2, "New layer's first write offset should match expected base")
+	require.Equal(t, layerID2, active.ID, "Second write should be in new active layer")
 
 	data, err := lm.GetDataRange(offset2, uint64(len(input2)))
 	require.NoError(t, err, "GetDataRange error")

@@ -15,6 +15,29 @@ type MetadataStore struct {
 	db *sql.DB
 }
 
+func (ms *MetadataStore) GetLayerBase(layerID int) (uint64, error) {
+	query := `
+		SELECT lower(file_range)::bigint
+		FROM entries
+		WHERE layer_id = $1
+		ORDER BY lower(file_range) ASC
+		LIMIT 1;
+	`
+
+	var base sql.NullInt64
+	err := ms.db.QueryRow(query, layerID).Scan(&base)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil // base will be 0
+		}
+		return 0, err
+	}
+	if !base.Valid {
+		return 0, fmt.Errorf("invalid base value for layer %d", layerID)
+	}
+	return uint64(base.Int64), nil
+}
+
 // LayerMetadata holds metadata for a layer.
 type LayerMetadata struct {
 	ID        int
@@ -69,8 +92,7 @@ func (ms *MetadataStore) init() error {
 	// Create layers table.
 	layerTable := `
 	CREATE TABLE IF NOT EXISTS layers (
-		id INTEGER PRIMARY KEY,
-		base BIGINT NOT NULL,
+		id SERIAL PRIMARY KEY,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		sealed INTEGER DEFAULT 0
 	);
@@ -103,18 +125,19 @@ func (ms *MetadataStore) init() error {
 }
 
 // RecordNewLayer inserts a new layer record.
-func (ms *MetadataStore) RecordNewLayer(layer *Layer) error {
-	Logger.Debug("Recording new layer in metadata store", "layerID", layer.ID, "base", layer.base)
+func (ms *MetadataStore) RecordNewLayer(layer *Layer) (int, error) {
+	Logger.Debug("Recording new layer in metadata store", "layerID", layer.ID)
 
-	query := `INSERT INTO layers (id, base, sealed) VALUES ($1, $2, 0);`
-	_, err := ms.db.Exec(query, layer.ID, layer.base)
+	query := `INSERT INTO layers (sealed) VALUES (0) RETURNING id;`
+	var newID int
+	err := ms.db.QueryRow(query).Scan(&newID)
 	if err != nil {
 		Logger.Error("Failed to record new layer", "layerID", layer.ID, "error", err)
-		return err
+		return 0, err
 	}
 
-	Logger.Debug("Layer recorded successfully", "layerID", layer.ID)
-	return nil
+	Logger.Debug("Layer recorded successfully", "layerID", newID)
+	return newID, nil
 }
 
 // SealLayer marks the layer with the given id as sealed.
@@ -161,48 +184,39 @@ func (ms *MetadataStore) RecordEntry(layerID int, offset uint64, data []byte, la
 // LoadLayers loads all layer metadata from the database sorted by id.
 // It returns a slice of layers (with only the metadata), the next available layer id,
 // and the highest base value among layers.
-func (ms *MetadataStore) LoadLayers() ([]*Layer, int, uint64, error) {
+func (ms *MetadataStore) LoadLayers() ([]*Layer, error) {
 	Logger.Debug("Loading layers from metadata store")
 
-	query := `SELECT id, base, sealed FROM layers ORDER BY id ASC;`
+	query := `SELECT id, sealed FROM layers ORDER BY id ASC;`
 	rows, err := ms.db.Query(query)
 	if err != nil {
 		Logger.Error("Failed to query layers", "error", err)
-		return nil, 0, 0, err
+		return nil, err
 	}
 	defer rows.Close()
 
 	var layers []*Layer
-	var maxID int
-	var maxBase uint64
 	layerCount := 0
 
 	for rows.Next() {
 		var id int
-		var base uint64
 		var sealedInt int
-		if err := rows.Scan(&id, &base, &sealedInt); err != nil {
+		if err := rows.Scan(&id, &sealedInt); err != nil {
 			Logger.Error("Error scanning layer row", "error", err)
-			return nil, 0, 0, err
+			return nil, err
 		}
 
-		layer := NewLayer(id, base)
+		layer := NewLayer()
+		layer.ID = id
 		layers = append(layers, layer)
-		if id > maxID {
-			maxID = id
-		}
-		if base > maxBase {
-			maxBase = base
-		}
 
 		sealed := sealedInt != 0
-		Logger.Debug("Loaded layer", "layerID", id, "base", base, "sealed", sealed)
+		Logger.Debug("Loaded layer", "layerID", id, "sealed", sealed)
 		layerCount++
 	}
 
-	nextID := maxID + 1
-	Logger.Debug("Layers loaded successfully", "count", layerCount, "nextID", nextID, "maxBase", maxBase)
-	return layers, nextID, maxBase, nil
+	Logger.Debug("Layers loaded successfully", "count", layerCount)
+	return layers, nil
 }
 
 // LoadEntries loads all entry records from the database and groups them by layer_id.
