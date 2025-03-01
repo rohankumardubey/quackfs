@@ -14,7 +14,9 @@ done
 
 # Create the database and user
 sudo -u postgres psql -c "CREATE DATABASE difffs;"
+sudo -u postgres psql -c "CREATE DATABASE difffs_test;"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE difffs TO postgres;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE difffs_test TO postgres;"
 sudo -u postgres psql -d difffs -c "ALTER USER postgres WITH ENCRYPTED PASSWORD 'password';"
 
 # Configure PostgreSQL to allow password-based authentication
@@ -25,7 +27,7 @@ echo "host all all 0.0.0.0/0 md5" | sudo tee -a /etc/postgresql/12/main/pg_hba.c
 # Reload PostgreSQL to apply the new configuration
 sudo service postgresql reload
 
-echo "PostgreSQL database 'difffs' has been created and authentication has been configured."
+echo "PostgreSQL database 'difffs' and 'difffs_test' has been created and authentication has been configured."
 
 # Show PostgreSQL status
 echo "PostgreSQL is running and ready to use."
