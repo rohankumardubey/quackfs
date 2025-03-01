@@ -14,6 +14,9 @@ import (
 // FS implements the FUSE filesystem.
 type FS struct{}
 
+// Check interface satisfied
+var _ fs.FS = (*FS)(nil)
+
 var globalLM *LayerManager
 var filesMutex sync.RWMutex
 var createdFiles = make(map[string]File)
@@ -158,6 +161,15 @@ type File struct {
 	fileSize uint64
 }
 
+var _ fs.Node = (*File)(nil)
+var _ fs.NodeOpener = (*File)(nil)
+var _ fs.NodeFsyncer = (*File)(nil)
+var _ fs.NodeGetxattrer = (*File)(nil)
+var _ fs.NodeListxattrer = (*File)(nil)
+var _ fs.NodeSetxattrer = (*File)(nil)
+var _ fs.NodeRemovexattrer = (*File)(nil)
+var _ fs.NodeReadlinker = (*File)(nil)
+
 func (f File) Attr(ctx context.Context, a *fuse.Attr) error {
 	Logger.Debug("Getting file attributes", "name", f.name)
 
@@ -298,4 +310,29 @@ func (f File) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
 func (f File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 	Logger.Debug("Syncing file", "name", f.name)
 	return nil
+}
+
+func (f File) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, resp *fuse.GetxattrResponse) error {
+	Logger.Debug("Getting xattr", "name", f.name, "attr", req.Name)
+	return nil
+}
+
+func (f File) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, resp *fuse.ListxattrResponse) error {
+	Logger.Debug("Listing xattrs", "name", f.name)
+	return nil
+}
+
+func (f File) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
+	Logger.Debug("Setting xattr", "name", f.name, "attr", req.Name)
+	return nil
+}
+
+func (f File) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
+	Logger.Debug("Removing xattr", "name", f.name, "attr", req.Name)
+	return nil
+}
+
+func (f File) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
+	Logger.Debug("Reading link", "name", f.name)
+	return "", nil
 }
