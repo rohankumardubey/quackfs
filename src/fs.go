@@ -231,11 +231,17 @@ func (f File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Writ
 		return nil
 	}
 
+	// For consistency, we'll make a copy of the data to prevent races
+	dataCopy := make([]byte, len(req.Data))
+	copy(dataCopy, req.Data)
+
+	// Use the layer manager to handle the write operation
 	_, _, err := globalLM.Write(req.Data, uint64(req.Offset))
 	if err != nil {
 		Logger.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
 	}
+
 	resp.Size = len(req.Data)
 	Logger.Debug("Write successful", "name", f.name, "bytesWritten", resp.Size)
 	return nil

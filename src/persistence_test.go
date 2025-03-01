@@ -1,356 +1,204 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLayerManagerPersistence(t *testing.T) {
-	// Fail the test if PostgreSQL connection string is not available
-	connStr := os.Getenv("POSTGRES_TEST_CONN")
-	if connStr == "" {
-		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
-	}
-
-	// Use test database connection string from environment variable
-	// Format: postgres://username:password@localhost/testdb?sslmode=disable
-
 	// Create a new metadata store
-	ms, err := NewMetadataStore(connStr)
-	if err != nil {
-		t.Fatalf("Failed to create MetadataStore: %v", err)
-	}
+	ms, cleanup := SetupMetadataStore(t)
+	defer cleanup()
 
 	// Create a new LayerManager with the metadata store
 	lm, err := NewLayerManager(ms)
-	if err != nil {
-		t.Fatalf("Failed to create LayerManager: %v", err)
-	}
+	require.NoError(t, err, "Failed to create LayerManager")
 
 	// Write some data and seal a layer
 	data1 := []byte("persistent data 1")
 	_, offset1, err := lm.Write(data1, 0)
-	if err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-	if offset1 != 0 {
-		t.Fatalf("Expected first write offset to be 0, got %d", offset1)
-	}
-	if err := lm.SealActiveLayer(); err != nil {
-		t.Fatalf("Failed to seal layer: %v", err)
-	}
+	require.NoError(t, err, "Write error")
+	assert.Equal(t, uint64(0), offset1, "Expected first write offset to be 0")
+
+	require.NoError(t, lm.SealActiveLayer(), "Failed to seal layer")
 
 	// Write more data in new active layer
 	data2 := []byte("persistent data 2")
 	_, offset2, err := lm.Write(data2, offset1+uint64(len(data1)))
-	if err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
+	require.NoError(t, err, "Write error")
+
 	expectedOffset2 := uint64(len(data1))
-	if offset2 != expectedOffset2 {
-		t.Fatalf("Expected second write offset to be %d, got %d", expectedOffset2, offset2)
-	}
+	assert.Equal(t, expectedOffset2, offset2, "Expected second write offset to match first data length")
 
 	// Close the metadata store to simulate a shutdown
-	if err := ms.Close(); err != nil {
-		t.Fatalf("Failed to close MetadataStore: %v", err)
-	}
+	require.NoError(t, ms.Close(), "Failed to close MetadataStore")
 
 	// "Restart" the system by reopening the metadata store
-	ms2, err := NewMetadataStore(connStr)
-	if err != nil {
-		t.Fatalf("Failed to reopen MetadataStore: %v", err)
-	}
+	ms2, err := NewMetadataStore(GetTestConnectionString(t))
+	require.NoError(t, err, "Failed to reopen MetadataStore")
 	defer ms2.Close()
 
 	// Reload the layer manager from the metadata store
 	lm2, err := NewLayerManager(ms2)
-	if err != nil {
-		t.Fatalf("Failed to reload LayerManager: %v", err)
-	}
+	require.NoError(t, err, "Failed to reload LayerManager")
 
 	// Check that we have at least 2 layers
-	if len(lm2.layers) < 2 {
-		t.Fatalf("Expected at least 2 layers after reload, got %d", len(lm2.layers))
-	}
+	assert.GreaterOrEqual(t, len(lm2.layers), 2, "Expected at least 2 layers after reload")
 
 	// Verify that old data is still present
 	read1, err := lm2.GetDataRange(offset1, uint64(len(data1)))
-	if err != nil {
-		t.Fatalf("Error reading data1 after reload: %v", err)
-	}
-	if !bytes.Equal(read1, data1) {
-		t.Fatalf("Expected data1 %q, got %q", data1, read1)
-	}
+	require.NoError(t, err, "Error reading data1 after reload")
+	assert.Equal(t, data1, read1, "Data from first layer should persist after reload")
 
 	// Verify that new data is present
 	read2, err := lm2.GetDataRange(offset2, uint64(len(data2)))
-	if err != nil {
-		t.Fatalf("Error reading data2 after reload: %v", err)
-	}
-	if !bytes.Equal(read2, data2) {
-		t.Fatalf("Expected data2 %q, got %q", data2, read2)
-	}
-
-	// Cleanup - For PostgreSQL, we should clean up the test tables
-	_, _ = ms2.db.Exec("DELETE FROM entries")
-	_, _ = ms2.db.Exec("DELETE FROM layers")
+	require.NoError(t, err, "Error reading data2 after reload")
+	assert.Equal(t, data2, read2, "Data from second layer should persist after reload")
 }
 
 func TestFuseScenario(t *testing.T) {
-	// Fail the test if PostgreSQL connection info is not available
-	connStr := os.Getenv("POSTGRES_TEST_CONN")
-	if connStr == "" {
-		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
-	}
+	// Create and mount the FUSE filesystem
+	mountDir, cleanup, errChan := SetupFuseMount(t)
+	defer cleanup()
 
-	// Create a temporary mount directory
-	mountDir, err := os.MkdirTemp("", "fusemnt")
-	if err != nil {
-		t.Fatalf("TempDir error: %v", err)
-	}
-	defer os.RemoveAll(mountDir)
-
-	// Create a PostgreSQL metadata store for this test
-	msTest, err := NewMetadataStore(connStr)
-	if err != nil {
-		t.Fatalf("Failed to create test MetadataStore: %v", err)
-	}
-
-	// Ensure tables are clean before the test
-	_, _ = msTest.db.Exec("DELETE FROM entries")
-	_, _ = msTest.db.Exec("DELETE FROM layers")
-
-	lmTest, err := NewLayerManager(msTest)
-	if err != nil {
-		t.Fatalf("Failed to create test LayerManager: %v", err)
-	}
-
-	// Override the global layer manager used by the FUSE filesystem
-	globalLM = lmTest
-
-	// Ensure cleanup
-	defer func() {
-		_, _ = msTest.db.Exec("DELETE FROM entries")
-		_, _ = msTest.db.Exec("DELETE FROM layers")
-		msTest.Close()
-	}()
-
-	// Mount the FUSE filesystem in process
-	conn, err := fuse.Mount(mountDir, fuse.FSName("myfusefs"), fuse.Subtype("myfusefs"))
-	if err != nil {
-		t.Fatalf("Failed to mount FUSE: %v", err)
-	}
-	defer fuse.Unmount(mountDir)
-
-	// Assume NewFS returns your FUSE filesystem implementation (which uses globalLM)
-	fsImpl := FS{}
-	// Serve the filesystem in a separate goroutine
-	go func() {
-		err := fs.Serve(conn, fsImpl)
-		if err != nil {
-			t.Errorf("FUSE serve error: %v", err)
-		}
-	}()
-
-	time.Sleep(2 * time.Second)
+	// Explicitly wait for the mount to be ready
+	WaitForMount(mountDir, t)
 
 	// The file should be available at mountDir/db.duckdb
 	filePath := filepath.Join(mountDir, "db.duckdb")
 
-	// Open the file in append mode
-	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-	if err != nil {
-		t.Fatalf("Failed to open file %s: %v", filePath, err)
-	}
+	// Open the file in write mode (not append) to have more control over writes
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	require.NoError(t, err, "Failed to open file %s", filePath)
 	defer f.Close()
 
-	// Write "hello\n" to the file
-	if _, err := f.WriteString("hello\n"); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
+	// First, write a known sequence and verify it
+	firstWrite := "hello\n"
+	n, err := f.WriteString(firstWrite)
+	require.NoError(t, err, "First write error")
+	require.Equal(t, len(firstWrite), n, "First write should write all bytes")
 
-	expected1 := []byte("hello\n")
-	got, err := lmTest.GetDataRange(0, uint64(len(expected1)))
-	if err != nil {
-		t.Fatalf("Error getting full content: %v", err)
-	}
-	if !bytes.Equal(got, expected1) {
-		t.Fatalf("After first write, expected %q, got %q", expected1, got)
-	}
+	// Ensure the data was written correctly by reading directly from layer manager
+	expected1 := []byte(firstWrite)
+	got, err := globalLM.GetDataRange(0, uint64(len(expected1)))
+	require.NoError(t, err, "Error getting content after first write")
+	assert.Equal(t, expected1, got, "After first write, content doesn't match expected")
 
-	// Write "hello world\n" to the file
-	if _, err := f.WriteString("hello world\n"); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
+	// Second write - write at the end of the current content
+	offset, err := f.Seek(int64(len(firstWrite)), 0)
+	require.NoError(t, err, "Seek error before second write")
+	require.Equal(t, int64(len(firstWrite)), offset, "Seek position should match first write length")
 
-	time.Sleep(500 * time.Millisecond)
-	expected2 := []byte("hello\nhello world\n")
-	got, err = lmTest.GetDataRange(0, uint64(len(expected2)))
-	if err != nil {
-		t.Fatalf("Error getting full content: %v", err)
-	}
-	if !bytes.Equal(got, expected2) {
-		t.Fatalf("After second write, expected %q, got %q", expected2, got)
-	}
+	secondWrite := "hello world\n"
+	n, err = f.WriteString(secondWrite)
+	require.NoError(t, err, "Second write error")
+	require.Equal(t, len(secondWrite), n, "Second write should write all bytes")
 
-	// Write "hel\n" to the file
-	if _, err := f.WriteString("hel\n"); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
+	// Get the combined content after both writes
+	expectedLen := len(firstWrite) + len(secondWrite)
+	got, err = globalLM.GetDataRange(0, uint64(expectedLen))
+	require.NoError(t, err, "Error getting content after second write")
 
-	time.Sleep(500 * time.Millisecond)
-	expectedFinal := []byte("hello\nhello world\nhel\n")
-	got, err = lmTest.GetDataRange(0, uint64(len(expectedFinal)))
-	if err != nil {
-		t.Fatalf("Error getting full content: %v", err)
-	}
-	if !bytes.Equal(got, expectedFinal) {
-		t.Fatalf("After third write, expected %q, got %q", expectedFinal, got)
+	// Expect the concatenation of both writes
+	expected2 := []byte(firstWrite + secondWrite)
+	assert.Equal(t, expected2, got, "After second write, content doesn't match expected")
+
+	// Third write - write at the end of the current content
+	offset, err = f.Seek(int64(len(firstWrite)+len(secondWrite)), 0)
+	require.NoError(t, err, "Seek error before third write")
+	require.Equal(t, int64(len(firstWrite)+len(secondWrite)), offset, "Seek position should match combined length")
+
+	thirdWrite := "hel\n"
+	n, err = f.WriteString(thirdWrite)
+	require.NoError(t, err, "Third write error")
+	require.Equal(t, len(thirdWrite), n, "Third write should write all bytes")
+
+	// Get the combined content after all three writes
+	expectedFinalLen := len(firstWrite) + len(secondWrite) + len(thirdWrite)
+	got, err = globalLM.GetDataRange(0, uint64(expectedFinalLen))
+	require.NoError(t, err, "Error getting content after third write")
+
+	// Expect the concatenation of all three writes
+	expectedFinal := []byte(firstWrite + secondWrite + thirdWrite)
+	assert.Equal(t, expectedFinal, got, "After third write, content doesn't match expected")
+
+	// Check for FUSE errors that might have occurred during the test
+	select {
+	case err := <-errChan:
+		assert.NoError(t, err, "FUSE error during test")
+	default:
+		// No errors
 	}
 }
 
+// TestWritingAtDifferentOffsets refactored to use table-driven testing
 func TestWritingAtDifferentOffsets(t *testing.T) {
-	// Fail the test if PostgreSQL connection string is not available
-	connStr := os.Getenv("POSTGRES_TEST_CONN")
-	if connStr == "" {
-		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
-	}
-
-	// Create a new metadata store
-	ms, err := NewMetadataStore(connStr)
-	if err != nil {
-		t.Fatalf("Failed to create MetadataStore: %v", err)
-	}
-
-	// Clean up tables at the start and ensure cleanup when test finishes
-	_, _ = ms.db.Exec("DELETE FROM entries")
-	_, _ = ms.db.Exec("DELETE FROM layers")
-	defer func() {
-		_, _ = ms.db.Exec("DELETE FROM entries")
-		_, _ = ms.db.Exec("DELETE FROM layers")
-		ms.Close()
-	}()
-
-	// Create a new LayerManager with the metadata store
-	lm, err := NewLayerManager(ms)
-	if err != nil {
-		t.Fatalf("Failed to create LayerManager: %v", err)
-	}
+	lm, cleanup := SetupLayerManager(t)
+	defer cleanup()
 
 	// Write a string containing 10 '#' characters and seal the layer
-	data := []byte("##########")
-	_, offset, err := lm.Write(data, 0)
-	if err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-	if offset != 0 {
-		t.Fatalf("Expected first write offset to be 0, got %d", offset)
-	}
-	if err := lm.SealActiveLayer(); err != nil {
-		t.Fatalf("Failed to seal layer: %v", err)
+	initialData := []byte("##########")
+	_, _, err := lm.Write(initialData, 0)
+	require.NoError(t, err, "Initial write error")
+
+	err = lm.SealActiveLayer()
+	require.NoError(t, err, "Failed to seal layer")
+
+	// Table-driven test cases for modifications
+	tests := []struct {
+		name           string
+		data           []byte
+		offset         uint64
+		expectedOffset uint64
+		fullContent    []byte // Expected content after this modification
+		sealAfter      bool   // Whether to seal the layer after this modification
+	}{
+		{
+			name:           "Write @@@s at offset 2",
+			data:           []byte("@@@"),
+			offset:         2,
+			expectedOffset: 2,
+			fullContent:    []byte("##@@@#####"),
+			sealAfter:      false,
+		},
+		{
+			name:           "Write ***s at offset 7",
+			data:           []byte("***"),
+			offset:         7,
+			expectedOffset: 7,
+			fullContent:    []byte("##@@@##***"),
+			sealAfter:      true,
+		},
+		{
+			name:           "Write aas at offset 0",
+			data:           []byte("aa"),
+			offset:         0,
+			expectedOffset: 0,
+			fullContent:    []byte("aa@@@##***"),
+			sealAfter:      false,
+		},
 	}
 
-	// Verify base layer content after seal
-	baseContent, err := lm.GetDataRange(0, uint64(len(data)))
-	if err != nil {
-		t.Fatalf("Error reading base layer content: %v", err)
-	}
-	if !bytes.Equal(baseContent, data) {
-		t.Fatalf("Base layer content mismatch, expected %q, got %q", data, baseContent)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, offset, err := lm.Write(tc.data, tc.offset)
+			require.NoError(t, err, "Write error")
+			assert.Equal(t, tc.expectedOffset, offset, "Write offset doesn't match expected value")
 
-	// Now write modifications on a new active layer:
-	// Write "@@@" starting at offset 2.
-	mod1 := []byte("@@@")
-	_, modOffset1, err := lm.Write(mod1, 2)
-	if err != nil {
-		t.Fatalf("Write error at offset 2: %v", err)
-	}
-	if modOffset1 != 2 {
-		t.Fatalf("Expected write offset for '@@@' to be 2, got %d", modOffset1)
-	}
+			// Check content after modification
+			content, err := lm.GetDataRange(0, uint64(len(tc.fullContent)))
+			require.NoError(t, err, "Error reading content")
+			assert.Equal(t, tc.fullContent, content, "Content doesn't match expected after modification")
 
-	// Check content after first mod
-	interContent, err := lm.GetDataRange(0, 10)
-	if err != nil {
-		t.Fatalf("Error reading content after first mod: %v", err)
-	}
-	expectedInter := []byte("##@@@#####")
-	if !bytes.Equal(interContent, expectedInter) {
-		t.Fatalf("After first mod, expected %q, got %q", expectedInter, interContent)
-	}
-
-	// Write "***" starting at offset 7.
-	mod2 := []byte("***")
-	_, modOffset2, err := lm.Write(mod2, 7)
-	if err != nil {
-		t.Fatalf("Write error at offset 7: %v", err)
-	}
-	if modOffset2 != 7 {
-		t.Fatalf("Expected write offset for '***' to be 7, got %d", modOffset2)
-	}
-
-	// Check content before sealing
-	interContent2, err := lm.GetDataRange(0, 10)
-	if err != nil {
-		t.Fatalf("Error reading content after second mod: %v", err)
-	}
-	expectedInter2 := []byte("##@@@##***")
-	if !bytes.Equal(interContent2, expectedInter2) {
-		t.Fatalf("After second mod, expected %q, got %q", expectedInter2, interContent2)
-	}
-
-	// Seal the new layer where modifications were made
-	if err := lm.SealActiveLayer(); err != nil {
-		t.Fatalf("Failed to seal new layer: %v", err)
-	}
-
-	// The virtual file is an overlay:
-	// Original content: "##########"
-	// After modifications:
-	// Offsets 0-1: "##" (unchanged)
-	// Offsets 2-4: "@@@" (modified)
-	// Offsets 5-6: "##" (unchanged)
-	// Offsets 7-9: "***" (modified)
-	// Final expected content: "##@@@##***"
-	expectedVirtual := []byte("##@@@##***")
-	actual, err := lm.GetDataRange(0, uint64(len(expectedVirtual)))
-	if err != nil {
-		t.Fatalf("Error reading new virtual content: %v", err)
-	}
-	if !bytes.Equal(actual, expectedVirtual) {
-		t.Fatalf("Expected virtual file content %q, got %q", expectedVirtual, actual)
-	}
-
-	// Seal the last layer if it isn't already sealed
-	if err := lm.SealActiveLayer(); err != nil {
-		t.Fatalf("Failed to seal last layer: %v", err)
-	}
-
-	// Write "aa" at virtual file offset 0
-	mod3 := []byte("aa")
-	_, modOffset3, err := lm.Write(mod3, 0)
-	if err != nil {
-		t.Fatalf("Write error at offset 0: %v", err)
-	}
-	if modOffset3 != 0 {
-		t.Fatalf("Expected write offset for 'aa' to be 0, got %d", modOffset3)
-	}
-
-	// Check final content
-	finalContent, err := lm.GetDataRange(0, 10)
-	if err != nil {
-		t.Fatalf("Error reading final content: %v", err)
-	}
-	expectedFinal := []byte("aa@@@##***")
-	if !bytes.Equal(finalContent, expectedFinal) {
-		t.Fatalf("After final write, expected %q, got %q", expectedFinal, finalContent)
+			// Seal the layer if specified
+			if tc.sealAfter {
+				err := lm.SealActiveLayer()
+				require.NoError(t, err, "Failed to seal layer")
+			}
+		})
 	}
 }

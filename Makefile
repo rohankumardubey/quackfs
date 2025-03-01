@@ -6,7 +6,7 @@ build:
 	go build -o difffs ./src
 
 test:
-	go test ./src
+	go test -race -shuffle=on -v ./src
 
 clean:
 	fusermount3 -u /tmp/fuse || true
