@@ -1,0 +1,9 @@
+---
+description: Use `make test`
+globs: 
+alwaysApply: false
+---
+
+# Test command
+
+- Use `make test` everytime you need to run tests or I ask you to
