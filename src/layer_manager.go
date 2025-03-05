@@ -51,24 +51,22 @@ func (l *Layer) EntryCount() int {
 // It uses a MetadataStore to persist layer metadata and entry data.
 type LayerManager struct {
 	mu       sync.RWMutex   // Primary mutex for protecting all shared state
-	layers   []*Layer       // All layers managed by this instance
 	metadata *MetadataStore // Metadata store for persistence
 }
 
 // NewLayerManager creates (or reloads) a LayerManager using the provided MetadataStore.
 func NewLayerManager(store *MetadataStore) (*LayerManager, error) {
 	Logger.Debug("Creating/reloading layer manager from metadata store")
-	layers, err := store.LoadLayers()
-	if err != nil {
-		Logger.Error("Failed to load layers from metadata store", "error", err)
-		return nil, fmt.Errorf("failed to load layers: %w", err)
-	}
-
-	Logger.Debug("Loaded layer information", "layerCount", len(layers))
 
 	lm := &LayerManager{
-		layers:   layers,
 		metadata: store,
+	}
+
+	// Check if any layers exist, if not create an initial layer
+	layers, err := store.LoadLayers()
+	if err != nil {
+		Logger.Error("Failed to check for existing layers", "error", err)
+		return nil, fmt.Errorf("failed to check for existing layers: %w", err)
 	}
 
 	// If no layers exist, create an initial layer.
@@ -78,12 +76,7 @@ func NewLayerManager(store *MetadataStore) (*LayerManager, error) {
 		}
 	}
 
-	// Load entries and rehydrate layers.
-	if err := lm.loadEntries(); err != nil {
-		return nil, err
-	}
-
-	Logger.Debug("Layer manager initialization complete", "totalLayers", len(lm.layers))
+	Logger.Debug("Layer manager initialization complete")
 	return lm, nil
 }
 
@@ -96,35 +89,7 @@ func (lm *LayerManager) createInitialLayer() error {
 		Logger.Error("Failed to record initial layer", "error", err)
 		return fmt.Errorf("failed to record initial layer: %w", err)
 	}
-	initial.ID = id
-	lm.layers = append(lm.layers, initial)
-	Logger.Debug("Initial layer created and recorded", "layerID", initial.ID)
-	return nil
-}
-
-// loadEntries loads all entries from the metadata store and populates the layers
-func (lm *LayerManager) loadEntries() error {
-	Logger.Debug("Loading entries from metadata store")
-	entries, err := lm.metadata.LoadEntries()
-	if err != nil {
-		Logger.Error("Failed to load entries from metadata store", "error", err)
-		return fmt.Errorf("failed to load entries: %w", err)
-	}
-
-	entriesLoaded := 0
-	for _, layer := range lm.layers {
-		if entryList, ok := entries[layer.ID]; ok {
-			Logger.Debug("Populating layer with entries", "layerID", layer.ID, "entryCount", len(entryList))
-			for _, entry := range entryList {
-				layer.AddEntry(entry.Offset, entry.Data)
-				entriesLoaded++
-			}
-		} else {
-			Logger.Debug("No entries found for layer", "layerID", layer.ID)
-		}
-	}
-
-	Logger.Debug("Entries loaded successfully", "totalEntries", entriesLoaded)
+	Logger.Debug("Initial layer created and recorded", "layerID", id)
 	return nil
 }
 
@@ -133,8 +98,19 @@ func (lm *LayerManager) ActiveLayer() *Layer {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	active := lm.layers[len(lm.layers)-1]
-	Logger.Debug("Getting active layer", "layerID", active.ID, "entryCount", active.EntryCount())
+	// Use the new method to load only the active layer
+	active, err := lm.metadata.LoadActiveLayer()
+	if err != nil {
+		Logger.Error("Failed to load active layer from metadata store", "error", err)
+		return nil
+	}
+
+	if active == nil {
+		Logger.Error("No active layer found in metadata store")
+		return nil
+	}
+
+	Logger.Debug("Got active layer", "layerID", active.ID, "entryCount", active.EntryCount())
 	return active
 }
 
@@ -144,7 +120,18 @@ func (lm *LayerManager) SealActiveLayer() error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	current := lm.layers[len(lm.layers)-1]
+	// Get the current active layer ID
+	layers, err := lm.metadata.LoadLayers()
+	if err != nil {
+		Logger.Error("Failed to load layers from metadata store", "error", err)
+		return fmt.Errorf("failed to load layers: %w", err)
+	}
+
+	if len(layers) == 0 {
+		return fmt.Errorf("no layers found to seal")
+	}
+
+	current := layers[len(layers)-1]
 	Logger.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.EntryCount())
 
 	if err := lm.metadata.SealLayer(current.ID); err != nil {
@@ -156,13 +143,11 @@ func (lm *LayerManager) SealActiveLayer() error {
 	id, err := lm.metadata.RecordNewLayer(newLayer)
 
 	if err != nil {
-		Logger.Error("Failed to record new layer", "layerID", newLayer.ID, "error", err)
-		return fmt.Errorf("failed to record new layer %d: %w", newLayer.ID, err)
+		Logger.Error("Failed to record new layer", "error", err)
+		return fmt.Errorf("failed to record new layer: %w", err)
 	}
 
-	newLayer.ID = id
-	lm.layers = append(lm.layers, newLayer)
-	Logger.Debug("Created new active layer after sealing", "newLayerID", newLayer.ID, "totalLayers", len(lm.layers))
+	Logger.Debug("Created new active layer after sealing", "newLayerID", id)
 
 	return nil
 }
@@ -174,7 +159,19 @@ func (lm *LayerManager) Write(data []byte, offset uint64) (layerID int, writtenO
 	defer lm.mu.Unlock()
 
 	Logger.Debug("Writing data", "size", len(data), "requestedOffset", offset)
-	active := lm.layers[len(lm.layers)-1]
+
+	// Get the active layer
+	layers, err := lm.metadata.LoadLayers()
+	if err != nil {
+		Logger.Error("Failed to load layers from metadata store", "error", err)
+		return 0, 0, fmt.Errorf("failed to load layers: %w", err)
+	}
+
+	if len(layers) == 0 {
+		return 0, 0, fmt.Errorf("no active layer found")
+	}
+
+	active := layers[len(layers)-1]
 
 	// Use the requested offset
 	writtenOffset = offset
@@ -239,18 +236,32 @@ func (lm *LayerManager) GetFullContent() []byte {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	Logger.Debug("Getting full content directly from layers")
+	Logger.Debug("Getting full content from database")
+
+	// Load all layers
+	layers, err := lm.metadata.LoadLayers()
+	if err != nil {
+		Logger.Error("Failed to load layers from metadata store", "error", err)
+		return []byte{}
+	}
+
+	// Load all entries
+	entriesMap, err := lm.metadata.LoadEntries()
+	if err != nil {
+		Logger.Error("Failed to load entries from metadata store", "error", err)
+		return []byte{}
+	}
 
 	// Calculate maximum size by finding the highest offset + data length
 	var maxSize uint64 = 0
 
-	for _, layer := range lm.layers {
-		offsets := layer.GetSortedOffsets()
-		for _, offset := range offsets {
-			data := layer.GetEntry(offset)
-			endOffset := offset + uint64(len(data))
-			if endOffset > maxSize {
-				maxSize = endOffset
+	for _, layer := range layers {
+		if entries, ok := entriesMap[layer.ID]; ok {
+			for _, entry := range entries {
+				endOffset := entry.Offset + uint64(len(entry.Data))
+				if endOffset > maxSize {
+					maxSize = endOffset
+				}
 			}
 		}
 	}
@@ -259,12 +270,13 @@ func (lm *LayerManager) GetFullContent() []byte {
 	buf := make([]byte, maxSize)
 
 	// Merge layers in order (later layers override earlier ones)
-	for _, layer := range lm.layers {
-		offsets := layer.GetSortedOffsets()
-		for _, off := range offsets {
-			data := layer.GetEntry(off)
-			if off+uint64(len(data)) <= uint64(len(buf)) {
-				copy(buf[off:off+uint64(len(data))], data)
+	for _, layer := range layers {
+		if entries, ok := entriesMap[layer.ID]; ok {
+			// Sort entries by offset for consistent application
+			for _, entry := range entries {
+				if entry.Offset+uint64(len(entry.Data)) <= uint64(len(buf)) {
+					copy(buf[entry.Offset:entry.Offset+uint64(len(entry.Data))], entry.Data)
+				}
 			}
 		}
 	}
@@ -275,7 +287,7 @@ func (lm *LayerManager) GetFullContent() []byte {
 
 // GetDataRange returns a slice of data from the given offset up to size bytes.
 func (lm *LayerManager) GetDataRange(offset uint64, size uint64) ([]byte, error) {
-	Logger.Debug("Getting data range directly from layers", "offset", offset, "requestedSize", size)
+	Logger.Debug("Getting data range from database", "offset", offset, "requestedSize", size)
 
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()

@@ -23,7 +23,9 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	require.NoError(t, err, "GetDataRange error")
 	assert.Equal(t, input, data, "Retrieved data should match input")
 
-	assert.Equal(t, lm.ActiveLayer().ID, layerID, "Write should return the active layer's ID")
+	activeLayer := lm.ActiveLayer()
+	require.NotNil(t, activeLayer, "Active layer should not be nil")
+	assert.Equal(t, activeLayer.ID, layerID, "Write should return the active layer's ID")
 }
 
 func TestSealLayerNewActiveLayer(t *testing.T) {
@@ -39,6 +41,7 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 	require.NoError(t, err, "SealActiveLayer failed")
 
 	active := lm.ActiveLayer()
+	require.NotNil(t, active, "Active layer should not be nil")
 	assert.Equal(t, layerID1+1, active.ID, "Active layer should change after sealing")
 
 	input2 := []byte("data2")

@@ -46,8 +46,10 @@ func TestLayerManagerPersistence(t *testing.T) {
 	lm2, err := NewLayerManager(ms2)
 	require.NoError(t, err, "Failed to reload LayerManager")
 
-	// Check that we have at least 2 layers
-	assert.GreaterOrEqual(t, len(lm2.layers), 2, "Expected at least 2 layers after reload")
+	// Check that we have at least 2 layers by querying the database
+	layers, err := ms2.LoadLayers()
+	require.NoError(t, err, "Failed to load layers from metadata store")
+	assert.GreaterOrEqual(t, len(layers), 2, "Expected at least 2 layers after reload")
 
 	// Verify that old data is still present
 	read1, err := lm2.GetDataRange(offset1, uint64(len(data1)))

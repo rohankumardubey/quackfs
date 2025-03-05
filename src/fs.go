@@ -175,6 +175,7 @@ func (f File) Attr(ctx context.Context, a *fuse.Attr) error {
 
 	// For the primary DB file, get actual content
 	if f.name == "db.duckdb" {
+		// TODO: This is a hack to get the size of the file. We should use the layer manager to get the size.
 		fullContent := globalLM.GetFullContent()
 		a.Mode = 0644
 		a.Size = uint64(len(fullContent))

@@ -306,6 +306,94 @@ func (ms *MetadataStore) LoadEntries() (map[int][]EntryRecord, error) {
 	return result, nil
 }
 
+// LoadActiveLayer loads only the active (unsealed) layer and its entries.
+// Returns the active layer or nil if no active layer is found.
+func (ms *MetadataStore) LoadActiveLayer() (*Layer, error) {
+	Logger.Debug("Loading active (unsealed) layer from metadata store")
+
+	// Use a single query with JOIN to get the active layer and its entries
+	query := `
+		SELECT l.id, e.offset_value, e.data, e.layer_range, e.file_range 
+		FROM layers l
+		LEFT JOIN entries e ON l.id = e.layer_id
+		WHERE l.sealed = 0
+		ORDER BY l.id DESC
+		LIMIT 1;
+	`
+
+	rows, err := ms.db.Query(query)
+	if err != nil {
+		Logger.Error("Failed to query active layer and entries", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Check if we found any rows
+	if !rows.Next() {
+		Logger.Debug("No active layer found")
+		return nil, nil
+	}
+
+	// Create the layer
+	layer := NewLayer()
+
+	// Track statistics
+	var layerID int
+	entriesCount := 0
+	totalDataSize := 0
+
+	// Process all rows
+	for {
+		var id int
+		var offset sql.NullInt64
+		var data []byte
+		var layerRangeStr, fileRangeStr sql.NullString
+
+		// Scan the current row
+		if err := rows.Scan(&id, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
+			Logger.Error("Error scanning row", "error", err)
+			return nil, err
+		}
+
+		// Set or verify the layer ID
+		if layerID == 0 {
+			layerID = id
+			layer.ID = id
+			Logger.Debug("Found active layer", "layerID", id)
+		} else if id != layerID {
+			// This shouldn't happen with our query, but check anyway
+			Logger.Warn("Unexpected layer ID in results", "expected", layerID, "got", id)
+		}
+
+		// Add entry data if present
+		if offset.Valid && data != nil {
+			offsetValue := uint64(offset.Int64)
+			layer.AddEntry(offsetValue, data)
+			entriesCount++
+			totalDataSize += len(data)
+			Logger.Debug("Loaded entry", "layerID", id, "offset", offsetValue, "dataSize", len(data))
+		}
+
+		// Move to next row or exit loop if done
+		if !rows.Next() {
+			break
+		}
+	}
+
+	// Check for errors from iterating over rows
+	if err = rows.Err(); err != nil {
+		Logger.Error("Error iterating over rows", "error", err)
+		return nil, err
+	}
+
+	Logger.Debug("Active layer loaded successfully",
+		"layerID", layerID,
+		"entriesCount", entriesCount,
+		"totalDataSize", totalDataSize)
+
+	return layer, nil
+}
+
 // Close closes the database.
 func (ms *MetadataStore) Close() error {
 	Logger.Debug("Closing metadata store database connection")
