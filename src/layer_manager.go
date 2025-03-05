@@ -231,6 +231,13 @@ func (lm *LayerManager) calculateRanges(layer *Layer, offset uint64, dataSize in
 	return layerRange, fileRange, nil
 }
 
+func (lm *LayerManager) FileSize() (uint64, error) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	return lm.metadata.CalculateVirtualFileSize()
+}
+
 // GetFullContent merges all layers with overlay semantics.
 func (lm *LayerManager) GetFullContent() []byte {
 	lm.mu.RLock()

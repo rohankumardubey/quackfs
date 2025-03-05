@@ -173,12 +173,14 @@ var _ fs.NodeReadlinker = (*File)(nil)
 func (f File) Attr(ctx context.Context, a *fuse.Attr) error {
 	Logger.Debug("Getting file attributes", "name", f.name)
 
-	// For the primary DB file, get actual content
 	if f.name == "db.duckdb" {
-		// TODO: This is a hack to get the size of the file. We should use the layer manager to get the size.
-		fullContent := globalLM.GetFullContent()
+		size, err := globalLM.FileSize()
+		if err != nil {
+			Logger.Error("Failed to get file size", "name", f.name, "error", err)
+			return err
+		}
 		a.Mode = 0644
-		a.Size = uint64(len(fullContent))
+		a.Size = size
 		Logger.Debug("Retrieved primary DB file attributes", "name", f.name, "size", a.Size)
 		return nil
 	}

@@ -405,3 +405,79 @@ func (ms *MetadataStore) Close() error {
 	}
 	return err
 }
+
+// CalculateVirtualFileSize calculates the total byte size of the virtual file from all layers and their entries, respecting layer creation order and handling overlapping file ranges.
+func (ms *MetadataStore) CalculateVirtualFileSize() (uint64, error) {
+	Logger.Debug("Calculating virtual file size from metadata store")
+
+	query := `
+		SELECT e.file_range
+		FROM entries e
+		JOIN layers l ON e.layer_id = l.id
+		ORDER BY l.created_at ASC, lower(e.file_range) ASC;
+	`
+	rows, err := ms.db.Query(query)
+	if err != nil {
+		Logger.Error("Failed to query file ranges", "error", err)
+		return 0, err
+	}
+	defer rows.Close()
+
+	type Range struct {
+		start uint64
+		end   uint64
+	}
+
+	var ranges []Range
+
+	for rows.Next() {
+		var fileRangeStr sql.NullString
+
+		if err := rows.Scan(&fileRangeStr); err != nil {
+			Logger.Error("Error scanning file range row", "error", err)
+			return 0, err
+		}
+
+		if fileRangeStr.Valid {
+			parts := strings.Split(strings.Trim(fileRangeStr.String, "[)"), ",")
+			if len(parts) == 2 {
+				start, err := strconv.ParseUint(parts[0], 10, 64)
+				if err != nil {
+					Logger.Error("Error parsing file range start", "value", parts[0], "error", err)
+					return 0, err
+				}
+				end, err := strconv.ParseUint(parts[1], 10, 64)
+				if err != nil {
+					Logger.Error("Error parsing file range end", "value", parts[1], "error", err)
+					return 0, err
+				}
+				ranges = append(ranges, Range{start: start, end: end})
+			}
+		}
+	}
+
+	if err = rows.Err(); err != nil {
+		Logger.Error("Error iterating over file range rows", "error", err)
+		return 0, err
+	}
+
+	// Merge overlapping ranges
+	var totalSize uint64
+	if len(ranges) > 0 {
+		current := ranges[0]
+		for _, r := range ranges[1:] {
+			if r.start <= current.end {
+				if r.end > current.end {
+					current.end = r.end
+				}
+			} else {
+				totalSize += current.end - current.start
+				current = r
+			}
+		}
+		totalSize += current.end - current.start
+	}
+
+	Logger.Debug("Virtual file size calculated successfully", "totalSize", totalSize)
+	return totalSize, nil
+}

@@ -204,3 +204,24 @@ func TestWritingAtDifferentOffsets(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateVirtualFileSize(t *testing.T) {
+	ms, cleanup := SetupMetadataStore(t)
+	defer cleanup()
+
+	_, err := ms.db.Exec(`
+		INSERT INTO layers (id, created_at, sealed) VALUES
+		(1, NOW(), 0),
+		(2, NOW(), 0);
+
+		INSERT INTO entries (layer_id, offset_value, data, layer_range, file_range) VALUES
+		(1, 0, 'data1', '[0,10)', '[0,10)'),
+		(1, 10, 'data2', '[10,20)', '[5,15)'),
+		(2, 0, 'data3', '[0,10)', '[10,20)');
+	`)
+	require.NoError(t, err, "Failed to insert test data")
+
+	size, err := ms.CalculateVirtualFileSize()
+	require.NoError(t, err, "Failed to calculate virtual file size")
+	assert.Equal(t, uint64(20), size, "Unexpected virtual file size")
+}
