@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"bazil.org/fuse"
@@ -18,8 +17,6 @@ type FS struct{}
 var _ fs.FS = (*FS)(nil)
 
 var globalLM *LayerManager
-var filesMutex sync.RWMutex
-var createdFiles = make(map[string]File)
 
 // initFS initializes the global layer manager using a PostgreSQL metadata store.
 // The connection string is constructed from environment variables or defaults to a local connection.
@@ -72,6 +69,12 @@ func (FS) Root() (fs.Node, error) {
 // Dir represents the root directory.
 type Dir struct{}
 
+var _ fs.Node = (*Dir)(nil)
+var _ fs.NodeStringLookuper = (*Dir)(nil)
+var _ fs.HandleReadDirAller = (*Dir)(nil)
+var _ fs.NodeCreater = (*Dir)(nil)
+var _ fs.NodeRemover = (*Dir)(nil)
+
 func (Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 	Logger.Debug("Getting directory attributes")
 	now := time.Now()
@@ -82,59 +85,91 @@ func (Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 	return nil
 }
 
+// Lookup looks up a specific file in the directory.
 func (Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	Logger.Debug("Looking up file", "name", name)
-	if name == "db.duckdb" {
-		Logger.Debug("Found primary db file", "name", name)
-		return File{
-			name:    name,
-			created: time.Now(),
-		}, nil
+
+	// Check if the file exists in our database
+	fileID, err := globalLM.metadata.GetFileIDByName(name)
+	if err != nil || fileID == 0 {
+		Logger.Debug("File not found in database", "name", name)
+		return nil, fuse.ENOENT
 	}
 
-	// Check if it's a file we've created during this session
-	filesMutex.RLock()
-	file, exists := createdFiles[name]
-	filesMutex.RUnlock()
-
-	if exists {
-		Logger.Debug("Found file in created files map", "name", name)
-		return file, nil
-	}
-
-	Logger.Debug("File not found", "name", name)
-	return nil, fuse.ENOENT
+	// Return a file node for the existing file
+	return &File{
+		name:     name,
+		created:  time.Now(),
+		modified: time.Now(),
+		accessed: time.Now(),
+	}, nil
 }
 
 func (Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	Logger.Debug("Reading directory contents")
-	// Start with our default file
-	entries := []fuse.Dirent{
-		{Name: "db.duckdb", Type: fuse.DT_File},
+	entries := []fuse.Dirent{}
+
+	// Query the database for all files
+	rows, err := globalLM.metadata.db.Query("SELECT name FROM files")
+	if err != nil {
+		Logger.Error("Failed to read directory from database", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			Logger.Error("Failed to scan file name", "error", err)
+			return nil, err
+		}
+		Logger.Debug("Adding file to directory listing", "name", name)
+		entries = append(entries, fuse.Dirent{Name: name, Type: fuse.DT_File})
 	}
 
-	// Add any created files
-	filesMutex.RLock()
-	fileCount := len(createdFiles)
-	for name := range createdFiles {
-		Logger.Debug("Adding created file to directory listing", "name", name)
-		entries = append(entries, fuse.Dirent{
-			Name: name,
-			Type: fuse.DT_File,
-		})
+	if err := rows.Err(); err != nil {
+		Logger.Error("Error iterating over file rows", "error", err)
+		return nil, err
 	}
-	filesMutex.RUnlock()
 
-	Logger.Debug("Directory read complete", "totalFiles", len(entries), "createdFiles", fileCount)
+	Logger.Debug("Directory read complete", "totalFiles", len(entries))
 	return entries, nil
+}
+
+// Remove handles the removal of a file or directory.
+func (Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+	Logger.Debug("Directory received remove request", "name", req.Name)
+
+	// For directories, we would check req.Dir, but we don't support directory removal yet
+	if req.Dir {
+		Logger.Warn("Directory removal not supported", "name", req.Name)
+		return fuse.ENOSYS // Operation not supported
+	}
+
+	// For files, we need to delete the file from our database
+	err := globalLM.metadata.DeleteFile(req.Name)
+	if err != nil {
+		Logger.Error("Failed to remove file from database", "name", req.Name, "error", err)
+		return err
+	}
+
+	Logger.Info("File removed successfully", "name", req.Name)
+	return nil
 }
 
 // Create creates and opens a file.
 func (Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
 	Logger.Info("Creating file", "filename", req.Name, "flags", req.Flags, "mode", req.Mode)
 
-	// Create the file
-	file := File{
+	// Insert the file into the database
+	_, err := globalLM.metadata.InsertFile(req.Name)
+	if err != nil {
+		Logger.Error("Failed to insert file into database", "name", req.Name, "error", err)
+		return nil, nil, err
+	}
+
+	// Create the file object
+	file := &File{
 		name:     req.Name,
 		created:  time.Now(),
 		modified: time.Now(),
@@ -142,13 +177,7 @@ func (Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Creat
 		fileSize: 0,
 	}
 
-	// Store in our created files map
-	filesMutex.Lock()
-	createdFiles[req.Name] = file
-	filesMutex.Unlock()
-
 	Logger.Debug("File created successfully", "filename", req.Name)
-	// Return both the node and the handle (same object implements both interfaces)
 	return file, file, nil
 }
 
@@ -169,48 +198,45 @@ var _ fs.NodeListxattrer = (*File)(nil)
 var _ fs.NodeSetxattrer = (*File)(nil)
 var _ fs.NodeRemovexattrer = (*File)(nil)
 var _ fs.NodeReadlinker = (*File)(nil)
+var _ fs.NodeRemover = (*File)(nil)
 
-func (f File) Attr(ctx context.Context, a *fuse.Attr) error {
+// Attr sets the file attributes
+func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	Logger.Debug("Getting file attributes", "name", f.name)
 
-	if f.name == "db.duckdb" {
-		size, err := globalLM.FileSize()
-		if err != nil {
-			Logger.Error("Failed to get file size", "name", f.name, "error", err)
-			return err
-		}
-		a.Mode = 0644
-		a.Size = size
-		Logger.Debug("Retrieved primary DB file attributes", "name", f.name, "size", a.Size)
-		return nil
+	// Get file metadata from the database
+	fileID, err := globalLM.metadata.GetFileIDByName(f.name)
+	if err != nil {
+		Logger.Error("Failed to get file ID", "name", f.name, "error", err)
+		return err
 	}
 
-	// For other files, use our tracked metadata
+	size, err := globalLM.FileSize(fileID)
+	if err != nil {
+		Logger.Error("Failed to get file size", "name", f.name, "error", err)
+		return err
+	}
+
 	a.Mode = 0644
-	a.Size = f.fileSize
-	a.Atime = f.accessed
+	a.Size = size
 	a.Mtime = f.modified
 	a.Ctime = f.created
+	a.Atime = f.accessed
 
-	Logger.Debug("Retrieved file attributes", "name", f.name, "size", a.Size, "modified", a.Mtime)
+	Logger.Debug("Retrieved file attributes", "name", f.name, "size", a.Size)
 	return nil
 }
 
-func (f File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
+func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
 	Logger.Debug("Opening file", "name", f.name, "flags", req.Flags)
 	return f, nil
 }
 
-func (f File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
+func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
 	Logger.Debug("Reading file", "name", f.name, "offset", req.Offset, "size", req.Size)
 
-	// Only read from the primary DB file
-	if f.name != "db.duckdb" {
-		Logger.Debug("Skipping read for non-primary file", "name", f.name)
-		return nil // Return empty data for other files
-	}
-
-	data, err := globalLM.GetDataRange(uint64(req.Offset), uint64(req.Size))
+	// Read from the layer manager for all files
+	data, err := globalLM.GetDataRange(f.name, uint64(req.Offset), uint64(req.Size))
 	if err != nil {
 		Logger.Error("Failed to read data", "name", f.name, "error", err)
 		return err
@@ -222,39 +248,27 @@ func (f File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadRe
 }
 
 // Write appends data via the layer manager. We require that writes are at the end of the file.
-func (f File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
+func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
 	Logger.Debug("Writing to file", "name", f.name, "offset", req.Offset, "size", len(req.Data))
-
-	// Only write to the primary DB file
-	if f.name != "db.duckdb" {
-		// For other files, just pretend to write
-		resp.Size = len(req.Data)
-
-		// Update the file size if needed
-		newSize := uint64(req.Offset) + uint64(len(req.Data))
-		filesMutex.Lock()
-		if file, exists := createdFiles[f.name]; exists {
-			if newSize > file.fileSize {
-				file.fileSize = newSize
-				file.modified = time.Now()
-				createdFiles[f.name] = file
-				Logger.Debug("Updated non-primary file size", "name", f.name, "newSize", newSize)
-			}
-		}
-		filesMutex.Unlock()
-		Logger.Debug("Simulated write to non-primary file complete", "name", f.name, "bytesWritten", resp.Size)
-		return nil
-	}
 
 	// For consistency, we'll make a copy of the data to prevent races
 	dataCopy := make([]byte, len(req.Data))
 	copy(dataCopy, req.Data)
 
 	// Use the layer manager to handle the write operation
-	_, _, err := globalLM.Write(req.Data, uint64(req.Offset))
+	// Pass the file name to the layer manager
+	_, _, err := globalLM.Write(f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		Logger.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
+	}
+
+	// Update the file size if this write extends the file
+	newEndOffset := uint64(req.Offset) + uint64(len(req.Data))
+	if newEndOffset > f.fileSize {
+		f.fileSize = newEndOffset
+		f.modified = time.Now()
+		Logger.Debug("Updated file size after write", "name", f.name, "newSize", f.fileSize)
 	}
 
 	resp.Size = len(req.Data)
@@ -263,79 +277,76 @@ func (f File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Writ
 }
 
 // SetAttr sets file attributes
-func (f File) SetAttr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
+func (f *File) SetAttr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
 	Logger.Debug("Setting file attributes", "name", f.name, "valid", req.Valid)
-
-	if f.name == "db.duckdb" {
-		// For the primary file, most attrs are ignored
-		Logger.Debug("Ignoring SetAttr for primary DB file", "name", f.name)
-		return nil
-	}
-
-	filesMutex.Lock()
-	defer filesMutex.Unlock()
-
-	file, exists := createdFiles[f.name]
-	if !exists {
-		Logger.Debug("File not found in SetAttr", "name", f.name)
-		return fuse.ENOENT
-	}
 
 	// Update the times if specified in the request
 	if req.Valid.Atime() {
-		file.accessed = req.Atime
+		f.accessed = req.Atime
 		Logger.Debug("Updated atime", "name", f.name, "atime", req.Atime)
 	}
 
 	if req.Valid.Mtime() {
-		file.modified = req.Mtime
+		f.modified = req.Mtime
 		Logger.Debug("Updated mtime", "name", f.name, "mtime", req.Mtime)
 	}
 
 	// Update size if specified
 	if req.Valid.Size() {
-		file.fileSize = req.Size
+		f.fileSize = req.Size
 		Logger.Debug("Updated file size", "name", f.name, "size", req.Size)
 	}
 
-	// Store updated file
-	createdFiles[f.name] = file
 	Logger.Debug("File attributes updated successfully", "name", f.name)
 
 	return nil
 }
 
-func (f File) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+func (f *File) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
 	Logger.Debug("Releasing file", "name", f.name, "flags", req.Flags)
 	return nil
 }
 
-func (f File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
+func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 	Logger.Debug("Syncing file", "name", f.name)
 	return nil
 }
 
-func (f File) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, resp *fuse.GetxattrResponse) error {
-	Logger.Debug("Getting xattr", "name", f.name, "attr", req.Name)
+func (f *File) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, resp *fuse.GetxattrResponse) error {
+	Logger.Debug("Getting extended attribute", "name", f.name, "attr", req.Name)
+	return fuse.ENODATA
+}
+
+func (f *File) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, resp *fuse.ListxattrResponse) error {
+	Logger.Debug("Listing extended attributes", "name", f.name)
 	return nil
 }
 
-func (f File) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, resp *fuse.ListxattrResponse) error {
-	Logger.Debug("Listing xattrs", "name", f.name)
+func (f *File) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
+	Logger.Debug("Setting extended attribute", "name", f.name, "attr", req.Name)
 	return nil
 }
 
-func (f File) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
-	Logger.Debug("Setting xattr", "name", f.name, "attr", req.Name)
+func (f *File) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
+	Logger.Debug("Removing extended attribute", "name", f.name, "attr", req.Name)
 	return nil
 }
 
-func (f File) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
-	Logger.Debug("Removing xattr", "name", f.name, "attr", req.Name)
-	return nil
+func (f *File) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
+	Logger.Debug("Reading symlink", "name", f.name)
+	return "", fuse.EIO
 }
 
-func (f File) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
-	Logger.Debug("Reading link", "name", f.name)
-	return "", nil
+func (f *File) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+	Logger.Debug("Removing file", "name", f.name)
+
+	// Remove the file from the database
+	err := globalLM.metadata.DeleteFile(f.name)
+	if err != nil {
+		Logger.Error("Failed to remove file from database", "name", f.name, "error", err)
+		return err
+	}
+
+	Logger.Info("File removed successfully", "name", f.name)
+	return nil
 }

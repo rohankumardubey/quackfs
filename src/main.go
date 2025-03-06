@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -57,20 +56,6 @@ Differential Storage System
 
 	// Initialize the filesystem
 	initFS()
-
-	// Start a goroutine to listen for keypresses.
-	go func() {
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			b, err := reader.ReadByte()
-			if err != nil {
-				continue
-			}
-			if b == 'c' {
-				simulateCheckpoint(globalLM)
-			}
-		}
-	}()
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint)

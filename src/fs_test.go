@@ -44,7 +44,7 @@ func TestFuseReadWrite(t *testing.T) {
 	WaitForMount(mountDir, t)
 
 	// Create the file first to ensure it exists
-	filePath := filepath.Join(mountDir, "db.duckdb")
+	filePath := filepath.Join(mountDir, "test_file.txt")
 	createFile, err := os.Create(filePath)
 	require.NoError(t, err, "Failed to create test file")
 	require.NoError(t, createFile.Close(), "Failed to close file after creation")
@@ -84,5 +84,50 @@ func TestFuseReadWrite(t *testing.T) {
 	waiterr := cmd.Wait()
 	if waiterr != nil && waiterr.Error() != "signal: interrupt" {
 		require.NoError(t, waiterr, "FUSE process exited with an error")
+	}
+}
+
+func TestFuseFileRemoval(t *testing.T) {
+	// Create and mount the FUSE filesystem
+	mountDir, cleanup, errChan := SetupFuseMount(t)
+	defer cleanup()
+
+	// Create a test file
+	testFileName := "test_removal_file.txt"
+	filePath := filepath.Join(mountDir, testFileName)
+
+	// Create the file
+	f, err := os.Create(filePath)
+	require.NoError(t, err, "Failed to create test file")
+
+	// Write some data to the file
+	_, err = f.WriteString("This is a test file that will be removed")
+	require.NoError(t, err, "Failed to write to test file")
+	require.NoError(t, f.Close(), "Failed to close file")
+
+	// Verify the file exists
+	_, err = os.Stat(filePath)
+	require.NoError(t, err, "File should exist before removal")
+
+	// Remove the file
+	err = os.Remove(filePath)
+	require.NoError(t, err, "Failed to remove file")
+
+	// Verify the file no longer exists
+	_, err = os.Stat(filePath)
+	require.Error(t, err, "File should not exist after removal")
+	require.True(t, os.IsNotExist(err), "Error should indicate file does not exist")
+
+	// Verify the file was removed from the database
+	fileID, err := globalLM.metadata.GetFileIDByName(testFileName)
+	require.NoError(t, err, "Error checking file ID")
+	require.Equal(t, 0, fileID, "File ID should be 0 (not found) after removal")
+
+	// Check for any errors from the FUSE server
+	select {
+	case err := <-errChan:
+		require.NoError(t, err, "FUSE server reported an error")
+	default:
+		// No error, which is good
 	}
 }

@@ -89,10 +89,18 @@ func NewMetadataStore(connStr string) (*MetadataStore, error) {
 func (ms *MetadataStore) init() error {
 	Logger.Debug("Initializing metadata store tables")
 
+	// Create files table.
+	filesTable := `
+	CREATE TABLE IF NOT EXISTS files (
+		id SERIAL PRIMARY KEY,
+		name TEXT UNIQUE NOT NULL
+	);
+	`
 	// Create layers table.
 	layerTable := `
 	CREATE TABLE IF NOT EXISTS layers (
 		id SERIAL PRIMARY KEY,
+		file_id INTEGER NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		sealed INTEGER DEFAULT 0
 	);
@@ -108,6 +116,12 @@ func (ms *MetadataStore) init() error {
 		PRIMARY KEY (layer_id, offset_value)
 	);
 	`
+	Logger.Debug("Creating files table if not exists")
+	if _, err := ms.db.Exec(filesTable); err != nil {
+		Logger.Error("Failed to create files table", "error", err)
+		return err
+	}
+
 	Logger.Debug("Creating layers table if not exists")
 	if _, err := ms.db.Exec(layerTable); err != nil {
 		Logger.Error("Failed to create layers table", "error", err)
@@ -124,17 +138,63 @@ func (ms *MetadataStore) init() error {
 	return nil
 }
 
+// InsertFile inserts a new file into the files table and returns its ID.
+func (ms *MetadataStore) InsertFile(name string) (int, error) {
+	Logger.Debug("Inserting new file into metadata store", "name", name)
+
+	query := `INSERT INTO files (name) VALUES ($1) RETURNING id;`
+	var fileID int
+	err := ms.db.QueryRow(query, name).Scan(&fileID)
+	if err != nil {
+		Logger.Error("Failed to insert new file", "name", name, "error", err)
+		return 0, err
+	}
+
+	// After inserting the file, create an initial unsealed layer for it
+	layer := NewLayer(fileID)
+	_, err = ms.RecordNewLayer(layer)
+	if err != nil {
+		Logger.Error("Failed to create initial layer for new file", "fileID", fileID, "error", err)
+		return 0, fmt.Errorf("failed to create initial layer for new file: %w", err)
+	}
+
+	Logger.Debug("File inserted successfully", "name", name, "fileID", fileID)
+	return fileID, nil
+}
+
+// GetFileIDByName retrieves the file ID for a given file name.
+func (ms *MetadataStore) GetFileIDByName(name string) (int, error) {
+	Logger.Debug("Retrieving file ID by name", "name", name)
+
+	query := `SELECT id FROM files WHERE name = $1;`
+	var fileID int
+	err := ms.db.QueryRow(query, name).Scan(&fileID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			Logger.Warn("File not found", "name", name)
+			return 0, nil
+		}
+		Logger.Error("Failed to retrieve file ID", "name", name, "error", err)
+		return 0, err
+	}
+
+	Logger.Debug("File ID retrieved successfully", "name", name, "fileID", fileID)
+	return fileID, nil
+}
+
 // RecordNewLayer inserts a new layer record.
 func (ms *MetadataStore) RecordNewLayer(layer *Layer) (int, error) {
 	Logger.Debug("Recording new layer in metadata store", "layerID", layer.ID)
 
-	query := `INSERT INTO layers (sealed) VALUES (0) RETURNING id;`
+	query := `INSERT INTO layers (file_id, sealed) VALUES ($1, 0) RETURNING id;`
 	var newID int
-	err := ms.db.QueryRow(query).Scan(&newID)
+	err := ms.db.QueryRow(query, layer.FileID).Scan(&newID)
 	if err != nil {
 		Logger.Error("Failed to record new layer", "layerID", layer.ID, "error", err)
 		return 0, err
 	}
+
+	layer.ID = newID
 
 	Logger.Debug("Layer recorded successfully", "layerID", newID)
 	return newID, nil
@@ -187,7 +247,7 @@ func (ms *MetadataStore) RecordEntry(layerID int, offset uint64, data []byte, la
 func (ms *MetadataStore) LoadLayers() ([]*Layer, error) {
 	Logger.Debug("Loading layers from metadata store")
 
-	query := `SELECT id, sealed FROM layers ORDER BY id ASC;`
+	query := `SELECT id, file_id, sealed FROM layers ORDER BY id ASC;`
 	rows, err := ms.db.Query(query)
 	if err != nil {
 		Logger.Error("Failed to query layers", "error", err)
@@ -199,14 +259,13 @@ func (ms *MetadataStore) LoadLayers() ([]*Layer, error) {
 	layerCount := 0
 
 	for rows.Next() {
-		var id int
-		var sealedInt int
-		if err := rows.Scan(&id, &sealedInt); err != nil {
+		var id, fileID, sealedInt int
+		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
 			Logger.Error("Error scanning layer row", "error", err)
 			return nil, err
 		}
 
-		layer := NewLayer()
+		layer := NewLayer(fileID)
 		layer.ID = id
 		layers = append(layers, layer)
 
@@ -223,7 +282,7 @@ func (ms *MetadataStore) LoadLayers() ([]*Layer, error) {
 func (ms *MetadataStore) LoadEntries() (map[int][]EntryRecord, error) {
 	Logger.Debug("Loading entries from metadata store")
 
-	query := `SELECT layer_id, offset_value, data, layer_range, file_range FROM entries;`
+	query := `SELECT layer_id, offset_value, data, layer_range, file_range FROM entries ORDER BY layer_id, offset_value ASC;`
 	rows, err := ms.db.Query(query)
 	if err != nil {
 		Logger.Error("Failed to query entries", "error", err)
@@ -313,7 +372,7 @@ func (ms *MetadataStore) LoadActiveLayer() (*Layer, error) {
 
 	// Use a single query with JOIN to get the active layer and its entries
 	query := `
-		SELECT l.id, e.offset_value, e.data, e.layer_range, e.file_range 
+		SELECT l.id, l.file_id, e.offset_value, e.data, e.layer_range, e.file_range 
 		FROM layers l
 		LEFT JOIN entries e ON l.id = e.layer_id
 		WHERE l.sealed = 0
@@ -335,7 +394,9 @@ func (ms *MetadataStore) LoadActiveLayer() (*Layer, error) {
 	}
 
 	// Create the layer
-	layer := NewLayer()
+	var fileID int
+	rows.Scan(&fileID)
+	layer := NewLayer(fileID)
 
 	// Track statistics
 	var layerID int
@@ -344,13 +405,13 @@ func (ms *MetadataStore) LoadActiveLayer() (*Layer, error) {
 
 	// Process all rows
 	for {
-		var id int
+		var id, fileID int
 		var offset sql.NullInt64
 		var data []byte
 		var layerRangeStr, fileRangeStr sql.NullString
 
 		// Scan the current row
-		if err := rows.Scan(&id, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
+		if err := rows.Scan(&id, &fileID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
 			Logger.Error("Error scanning row", "error", err)
 			return nil, err
 		}
@@ -407,18 +468,19 @@ func (ms *MetadataStore) Close() error {
 }
 
 // CalculateVirtualFileSize calculates the total byte size of the virtual file from all layers and their entries, respecting layer creation order and handling overlapping file ranges.
-func (ms *MetadataStore) CalculateVirtualFileSize() (uint64, error) {
-	Logger.Debug("Calculating virtual file size from metadata store")
+func (ms *MetadataStore) CalculateVirtualFileSize(fileID int) (uint64, error) {
+	Logger.Debug("Calculating virtual file size from metadata store", "fileID", fileID)
 
 	query := `
 		SELECT e.file_range
 		FROM entries e
 		JOIN layers l ON e.layer_id = l.id
+		WHERE l.file_id = $1
 		ORDER BY l.created_at ASC, lower(e.file_range) ASC;
 	`
-	rows, err := ms.db.Query(query)
+	rows, err := ms.db.Query(query, fileID)
 	if err != nil {
-		Logger.Error("Failed to query file ranges", "error", err)
+		Logger.Error("Failed to query file ranges", "error", err, "fileID", fileID)
 		return 0, err
 	}
 	defer rows.Close()
@@ -464,20 +526,120 @@ func (ms *MetadataStore) CalculateVirtualFileSize() (uint64, error) {
 	// Merge overlapping ranges
 	var totalSize uint64
 	if len(ranges) > 0 {
-		current := ranges[0]
-		for _, r := range ranges[1:] {
-			if r.start <= current.end {
-				if r.end > current.end {
-					current.end = r.end
-				}
-			} else {
-				totalSize += current.end - current.start
-				current = r
+		// Ranges are already sorted by the SQL query (ORDER BY l.created_at ASC, lower(e.file_range) ASC)
+		// Find the maximum end position, which represents the virtual file size
+		var maxEnd uint64
+		for _, r := range ranges {
+			if r.end > maxEnd {
+				maxEnd = r.end
 			}
 		}
-		totalSize += current.end - current.start
+
+		totalSize = maxEnd
 	}
 
 	Logger.Debug("Virtual file size calculated successfully", "totalSize", totalSize)
 	return totalSize, nil
+}
+
+// LoadLayersByFileID loads all layers associated with a specific file ID from the database.
+func (ms *MetadataStore) LoadLayersByFileID(fileID int) ([]*Layer, error) {
+	Logger.Debug("Loading layers for file from metadata store", "fileID", fileID)
+
+	query := `SELECT id, file_id, sealed FROM layers WHERE file_id = $1 ORDER BY id ASC;`
+	rows, err := ms.db.Query(query, fileID)
+	if err != nil {
+		Logger.Error("Failed to query layers for file", "fileID", fileID, "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var layers []*Layer
+	layerCount := 0
+
+	for rows.Next() {
+		var id, sealedInt int
+		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
+			Logger.Error("Error scanning layer row", "error", err)
+			return nil, err
+		}
+
+		layer := NewLayer(fileID)
+		layer.ID = id
+		layers = append(layers, layer)
+
+		sealed := sealedInt != 0
+		Logger.Debug("Loaded layer for file", "layerID", id, "sealed", sealed)
+		layerCount++
+	}
+
+	Logger.Debug("Layers for file loaded successfully", "fileID", fileID, "count", layerCount)
+	return layers, nil
+}
+
+// DeleteFile removes a file and its associated layers and entries from the database within a transaction.
+func (ms *MetadataStore) DeleteFile(name string) error {
+	Logger.Debug("Deleting file and its associated data from metadata store", "name", name)
+
+	// Begin a transaction
+	tx, err := ms.db.Begin()
+	if err != nil {
+		Logger.Error("Failed to begin transaction", "error", err)
+		return err
+	}
+
+	// Ensure the transaction is rolled back in case of an error
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback()
+			panic(p) // re-throw panic after Rollback
+		} else if err != nil {
+			Logger.Error("Transaction failed, rolling back", "error", err)
+			tx.Rollback()
+		} else {
+			err = tx.Commit()
+			if err != nil {
+				Logger.Error("Failed to commit transaction", "error", err)
+			}
+		}
+	}()
+
+	// Retrieve the file ID
+	fileID, err := ms.GetFileIDByName(name)
+	if err != nil {
+		Logger.Error("Failed to retrieve file ID", "name", name, "error", err)
+		return err
+	}
+
+	if fileID == 0 {
+		Logger.Warn("File not found, nothing to delete", "name", name)
+		return nil
+	}
+
+	// Delete all entries associated with the file's layers
+	deleteEntriesQuery := `DELETE FROM entries WHERE layer_id IN (SELECT id FROM layers WHERE file_id = $1);`
+	_, err = tx.Exec(deleteEntriesQuery, fileID)
+	if err != nil {
+		Logger.Error("Failed to delete entries for file", "name", name, "error", err)
+		return err
+	}
+
+	// Delete all layers associated with the file
+	deleteLayersQuery := `DELETE FROM layers WHERE file_id = $1;`
+	_, err = tx.Exec(deleteLayersQuery, fileID)
+	if err != nil {
+		Logger.Error("Failed to delete layers for file", "name", name, "error", err)
+		return err
+	}
+
+	// Delete the file itself
+	deleteFileQuery := `DELETE FROM files WHERE id = $1;`
+	_, err = tx.Exec(deleteFileQuery, fileID)
+	if err != nil {
+		Logger.Error("Failed to delete file", "name", name, "error", err)
+		return err
+	}
+
+	Logger.Info("File and its associated data deleted successfully", "name", name)
+	return nil
 }

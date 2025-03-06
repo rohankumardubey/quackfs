@@ -33,10 +33,17 @@ func SetupMetadataStore(t *testing.T) (*MetadataStore, func()) {
 		t.Fatalf("Failed to clean layers table: %v", err)
 	}
 
+	// Delete files
+	_, err = ms.db.Exec("DELETE FROM files")
+	if err != nil {
+		t.Fatalf("Failed to clean files table: %v", err)
+	}
+
 	// Return cleanup function
 	cleanup := func() {
 		_, _ = ms.db.Exec("DELETE FROM entries")
 		_, _ = ms.db.Exec("DELETE FROM layers")
+		_, _ = ms.db.Exec("DELETE FROM files")
 		ms.Close()
 	}
 
