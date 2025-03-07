@@ -66,6 +66,8 @@ func main() {
 		executeWriteCommand(sm)
 	case "checkpoint":
 		executeCheckpointCommand(sm)
+	case "read":
+		executeReadCommand(sm)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -79,6 +81,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  write      - Write data to a file")
 	fmt.Println("  checkpoint - Checkpoint a file")
+	fmt.Println("  read       - Read and print file content to standard output")
 }
 
 // executeWriteCommand handles the "write" subcommand
@@ -212,6 +215,71 @@ func executeCheckpointCommand(sm *storage.Manager) {
 
 	logger.Log.Info("File checkpointed successfully", "fileName", *fileName)
 	fmt.Printf("Successfully checkpointed file %s\n", *fileName)
+}
+
+// executeReadCommand handles the "read" subcommand
+func executeReadCommand(sm *storage.Manager) {
+	// Define command-line flags for read command
+	readCmd := flag.NewFlagSet("read", flag.ExitOnError)
+	fileName := readCmd.String("file", "", "Target file to read from")
+	offset := readCmd.Uint64("offset", 0, "Offset in the file to start reading from (default: 0)")
+	size := readCmd.Uint64("size", 0, "Number of bytes to read (default: entire file)")
+
+	// Parse the flags
+	readCmd.Parse(os.Args[1:])
+
+	// Validate required flags
+	if *fileName == "" {
+		logger.Log.Error("Missing required flag: -file")
+		fmt.Println("Usage: op read -file <filename> [-offset <offset>] [-size <size>]")
+		os.Exit(1)
+	}
+
+	// Check if the file exists
+	fileID, err := sm.GetFileIDByName(*fileName)
+	if err != nil {
+		logger.Log.Fatal("Failed to check if file exists", "error", err)
+	}
+
+	// If the file doesn't exist, report an error
+	if fileID == 0 {
+		logger.Log.Error("File does not exist", "fileName", *fileName)
+		fmt.Printf("Error: File '%s' does not exist\n", *fileName)
+		os.Exit(1)
+	}
+
+	// Get file size to determine how much to read if size is not specified
+	fileSize, err := sm.FileSize(fileID)
+	if err != nil {
+		logger.Log.Fatal("Failed to get file size", "error", err)
+	}
+
+	// If size is 0, read the entire file from the offset
+	readSize := *size
+	if readSize == 0 {
+		readSize = fileSize - *offset
+	}
+
+	// Read the data from the file
+	data, err := sm.GetDataRange(*fileName, *offset, readSize)
+	if err != nil {
+		logger.Log.Fatal("Failed to read data", "error", err)
+	}
+
+	// Print file information
+	logger.Log.Info("Reading file content",
+		"fileName", *fileName,
+		"offset", *offset,
+		"size", readSize,
+		"bytesRead", len(data))
+
+	// Print the data to stdout
+	fmt.Print(string(data))
+
+	// If the output doesn't end with a newline, add one for better terminal display
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		fmt.Println()
+	}
 }
 
 // newDB establishes a connection to the database

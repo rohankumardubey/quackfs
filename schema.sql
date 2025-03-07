@@ -14,10 +14,10 @@ CREATE TABLE IF NOT EXISTS layers (
 
 -- Create entries table with proper index creation and range columns
 CREATE TABLE IF NOT EXISTS entries (
+    id SERIAL PRIMARY KEY,
     layer_id INTEGER REFERENCES layers(id),
     offset_value BIGINT NOT NULL,
     data BYTEA NOT NULL,
     layer_range INT8RANGE NOT NULL,
-    file_range INT8RANGE NOT NULL,
-    PRIMARY KEY (layer_id, offset_value)
+    file_range INT8RANGE NOT NULL
 ); 

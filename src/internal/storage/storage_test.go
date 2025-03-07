@@ -463,3 +463,61 @@ func TestExampleWorkflow(t *testing.T) {
 	fullContent := sm.GetFullContentForFile(fileID)
 	assert.Equal(t, expectedContent, fullContent, "Full content should be the concatenation of data1 and data2")
 }
+
+func TestWriteToSameOffsetTwice(t *testing.T) {
+	// Setup a storage manager
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	// Create a test file
+	filename := "testfile_write_same_offset"
+	fileID, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	// Write initial data
+	initialData := []byte("initial data")
+	_, _, err = sm.Write(filename, initialData, 0)
+	require.NoError(t, err, "Failed to write initial data")
+
+	// Verify the initial data was written correctly
+	readData, err := sm.GetDataRange(filename, 0, uint64(len(initialData)))
+	require.NoError(t, err, "Failed to read initial data")
+	assert.Equal(t, initialData, readData, "Initial data should be read correctly")
+
+	// Write new data to the same offset
+	newData := []byte("overwritten!")
+	_, _, err = sm.Write(filename, newData, 0)
+	require.NoError(t, err, "Failed to write new data to the same offset")
+
+	// Verify the new data overwrote the initial data
+	readNewData, err := sm.GetDataRange(filename, 0, uint64(len(newData)))
+	require.NoError(t, err, "Failed to read new data")
+	assert.Equal(t, newData, readNewData, "New data should overwrite initial data at the same offset")
+
+	// Check the full content of the file
+	fullContent := sm.GetFullContentForFile(fileID)
+	assert.Equal(t, newData, fullContent, "Full content should match the new data")
+
+	// Write data that partially overlaps with existing data
+	partialData := []byte("partial")
+	partialOffset := uint64(5) // This will overlap with part of the existing data
+	_, _, err = sm.Write(filename, partialData, partialOffset)
+	require.NoError(t, err, "Failed to write partially overlapping data")
+
+	// Expected content after partial write
+	expectedContent := make([]byte, len(newData))
+	copy(expectedContent, newData)
+	// Overwrite the portion that should be replaced by partialData
+	for i := 0; i < len(partialData); i++ {
+		if int(partialOffset)+i < len(expectedContent) {
+			expectedContent[partialOffset+uint64(i)] = partialData[i]
+		} else {
+			expectedContent = append(expectedContent, partialData[i:]...)
+			break
+		}
+	}
+
+	// Verify the full content matches our expectations
+	fullContentAfterPartial := sm.GetFullContentForFile(fileID)
+	assert.Equal(t, expectedContent, fullContentAfterPartial, "Full content should reflect partial overwrite")
+}

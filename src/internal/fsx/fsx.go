@@ -46,6 +46,7 @@ func (Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 	a.Atime = now
 	a.Mtime = now
 	a.Ctime = now
+	a.Valid = 1 * time.Second
 	return nil
 }
 
@@ -177,6 +178,7 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	a.Mtime = f.modified
 	a.Ctime = f.created
 	a.Atime = f.accessed
+	a.Valid = 1 * time.Second
 
 	logger.Log.Debug("Retrieved file attributes", "name", f.name, "size", a.Size)
 	return nil
