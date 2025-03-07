@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"time"
 
 	log "github.com/charmbracelet/log"
 	_ "github.com/lib/pq"
@@ -14,28 +13,9 @@ import (
 	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
-// Initialize our global logger
-func initLogger() {
-	// Set log level from environment variable
-	logLevel := getEnvOrDefault("LOG_LEVEL", "info")
-
-	logger.Log = log.NewWithOptions(os.Stderr, log.Options{
-		ReportCaller:    logLevel == "debug",
-		ReportTimestamp: true,
-		TimeFormat:      time.Kitchen,
-	})
-
-	if logLevel != "" {
-		level, err := log.ParseLevel(logLevel)
-		if err == nil {
-			logger.Log.SetLevel(level)
-		}
-	}
-}
-
 func main() {
 	// Initialize logger first thing
-	initLogger()
+	log := logger.New(os.Stderr)
 
 	// Check if a subcommand was provided
 	if len(os.Args) < 2 {
@@ -50,24 +30,24 @@ func main() {
 	os.Args = slices.Delete(os.Args, 1, 2)
 
 	// Connect to the database
-	db := newDB()
+	db := newDB(log)
 	defer db.Close()
 
 	// Create a storage manager
-	sm, err := storage.NewManager(db)
+	sm, err := storage.NewManager(db, log)
 	if err != nil {
-		logger.Log.Fatal("Failed to create storage manager", "error", err)
+		log.Fatal("Failed to create storage manager", "error", err)
 	}
 	defer sm.Close()
 
 	// Execute the appropriate command
 	switch command {
 	case "write":
-		executeWriteCommand(sm)
+		executeWriteCommand(sm, log)
 	case "checkpoint":
-		executeCheckpointCommand(sm)
+		executeCheckpointCommand(sm, log)
 	case "read":
-		executeReadCommand(sm)
+		executeReadCommand(sm, log)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -85,7 +65,7 @@ func printUsage() {
 }
 
 // executeWriteCommand handles the "write" subcommand
-func executeWriteCommand(sm *storage.Manager) {
+func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 	// Define command-line flags for write command
 	writeCmd := flag.NewFlagSet("write", flag.ExitOnError)
 	fileName := writeCmd.String("file", "", "Target file to write to")
@@ -98,13 +78,13 @@ func executeWriteCommand(sm *storage.Manager) {
 
 	// Validate required flags
 	if *fileName == "" {
-		logger.Log.Error("Missing required flag: -file")
+		log.Error("Missing required flag: -file")
 		fmt.Println("Usage: op write -file <filename> -offset <offset> -data <data>")
 		os.Exit(1)
 	}
 
 	if *data == "" {
-		logger.Log.Error("Missing required flag: -data")
+		log.Error("Missing required flag: -data")
 		fmt.Println("Usage: op write -file <filename> -offset <offset> -data <data>")
 		os.Exit(1)
 	}
@@ -112,15 +92,15 @@ func executeWriteCommand(sm *storage.Manager) {
 	// Check if the file exists
 	fileID, err := sm.GetFileIDByName(*fileName)
 	if err != nil {
-		logger.Log.Fatal("Failed to check if file exists", "error", err)
+		log.Fatal("Failed to check if file exists", "error", err)
 	}
 
 	// If the file doesn't exist, create it
 	if fileID == 0 {
-		logger.Log.Info("File does not exist, creating it", "fileName", *fileName)
+		log.Info("File does not exist, creating it", "fileName", *fileName)
 		fileID, err = sm.InsertFile(*fileName)
 		if err != nil {
-			logger.Log.Fatal("Failed to create file", "error", err)
+			log.Fatal("Failed to create file", "error", err)
 		}
 	}
 
@@ -129,14 +109,14 @@ func executeWriteCommand(sm *storage.Manager) {
 	if fileID != 0 {
 		fileSize, err = sm.FileSize(fileID)
 		if err != nil {
-			logger.Log.Fatal("Failed to get file size", "error", err)
+			log.Fatal("Failed to get file size", "error", err)
 		}
 	}
 
 	// If writing beyond file size and it's allowed, fill the gap with null bytes
 	if *offset > fileSize && *allowBeyondSize {
 		if *offset > fileSize {
-			logger.Log.Info("Writing beyond file size, filling gap with null bytes",
+			log.Info("Writing beyond file size, filling gap with null bytes",
 				"fileName", *fileName,
 				"currentSize", fileSize,
 				"targetOffset", *offset)
@@ -146,7 +126,7 @@ func executeWriteCommand(sm *storage.Manager) {
 
 			// Only fill the gap if it's not too large (prevent accidental huge allocations)
 			if gapSize > 1024*1024*10 { // 10MB limit
-				logger.Log.Fatal("Gap size too large, aborting", "gapSize", gapSize)
+				log.Fatal("Gap size too large, aborting", "gapSize", gapSize)
 			}
 
 			// Fill the gap with null bytes if needed
@@ -154,9 +134,9 @@ func executeWriteCommand(sm *storage.Manager) {
 				nullBytes := make([]byte, gapSize)
 				_, _, err := sm.Write(*fileName, nullBytes, fileSize)
 				if err != nil {
-					logger.Log.Fatal("Failed to fill gap with null bytes", "error", err)
+					log.Fatal("Failed to fill gap with null bytes", "error", err)
 				}
-				logger.Log.Info("Gap filled with null bytes", "gapSize", gapSize)
+				log.Info("Gap filled with null bytes", "gapSize", gapSize)
 			}
 		}
 	}
@@ -165,10 +145,10 @@ func executeWriteCommand(sm *storage.Manager) {
 	dataBytes := []byte(*data)
 	layerID, writtenOffset, err := sm.Write(*fileName, dataBytes, *offset)
 	if err != nil {
-		logger.Log.Fatal("Failed to write data", "error", err)
+		log.Fatal("Failed to write data", "error", err)
 	}
 
-	logger.Log.Info("Data written successfully",
+	log.Info("Data written successfully",
 		"fileName", *fileName,
 		"offset", *offset,
 		"dataSize", len(dataBytes),
@@ -179,7 +159,7 @@ func executeWriteCommand(sm *storage.Manager) {
 }
 
 // executeCheckpointCommand handles the "checkpoint" subcommand
-func executeCheckpointCommand(sm *storage.Manager) {
+func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	// Define command-line flags for checkpoint command
 	checkpointCmd := flag.NewFlagSet("checkpoint", flag.ExitOnError)
 	fileName := checkpointCmd.String("file", "", "Target file to checkpoint")
@@ -189,7 +169,7 @@ func executeCheckpointCommand(sm *storage.Manager) {
 
 	// Validate required flags
 	if *fileName == "" {
-		logger.Log.Error("Missing required flag: -file")
+		log.Error("Missing required flag: -file")
 		fmt.Println("Usage: op checkpoint -file <filename>")
 		os.Exit(1)
 	}
@@ -197,12 +177,12 @@ func executeCheckpointCommand(sm *storage.Manager) {
 	// Check if the file exists
 	fileID, err := sm.GetFileIDByName(*fileName)
 	if err != nil {
-		logger.Log.Fatal("Failed to check if file exists", "error", err)
+		log.Fatal("Failed to check if file exists", "error", err)
 	}
 
 	// If the file doesn't exist, report an error
 	if fileID == 0 {
-		logger.Log.Error("File does not exist", "fileName", *fileName)
+		log.Error("File does not exist", "fileName", *fileName)
 		fmt.Printf("Error: File '%s' does not exist\n", *fileName)
 		os.Exit(1)
 	}
@@ -210,15 +190,15 @@ func executeCheckpointCommand(sm *storage.Manager) {
 	// Checkpoint the file
 	err = sm.Checkpoint(*fileName)
 	if err != nil {
-		logger.Log.Fatal("Failed to checkpoint file", "error", err)
+		log.Fatal("Failed to checkpoint file", "error", err)
 	}
 
-	logger.Log.Info("File checkpointed successfully", "fileName", *fileName)
+	log.Info("File checkpointed successfully", "fileName", *fileName)
 	fmt.Printf("Successfully checkpointed file %s\n", *fileName)
 }
 
 // executeReadCommand handles the "read" subcommand
-func executeReadCommand(sm *storage.Manager) {
+func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	// Define command-line flags for read command
 	readCmd := flag.NewFlagSet("read", flag.ExitOnError)
 	fileName := readCmd.String("file", "", "Target file to read from")
@@ -230,7 +210,7 @@ func executeReadCommand(sm *storage.Manager) {
 
 	// Validate required flags
 	if *fileName == "" {
-		logger.Log.Error("Missing required flag: -file")
+		log.Error("Missing required flag: -file")
 		fmt.Println("Usage: op read -file <filename> [-offset <offset>] [-size <size>]")
 		os.Exit(1)
 	}
@@ -238,12 +218,12 @@ func executeReadCommand(sm *storage.Manager) {
 	// Check if the file exists
 	fileID, err := sm.GetFileIDByName(*fileName)
 	if err != nil {
-		logger.Log.Fatal("Failed to check if file exists", "error", err)
+		log.Fatal("Failed to check if file exists", "error", err)
 	}
 
 	// If the file doesn't exist, report an error
 	if fileID == 0 {
-		logger.Log.Error("File does not exist", "fileName", *fileName)
+		log.Error("File does not exist", "fileName", *fileName)
 		fmt.Printf("Error: File '%s' does not exist\n", *fileName)
 		os.Exit(1)
 	}
@@ -251,7 +231,7 @@ func executeReadCommand(sm *storage.Manager) {
 	// Get file size to determine how much to read if size is not specified
 	fileSize, err := sm.FileSize(fileID)
 	if err != nil {
-		logger.Log.Fatal("Failed to get file size", "error", err)
+		log.Fatal("Failed to get file size", "error", err)
 	}
 
 	// If size is 0, read the entire file from the offset
@@ -263,11 +243,11 @@ func executeReadCommand(sm *storage.Manager) {
 	// Read the data from the file
 	data, err := sm.GetDataRange(*fileName, *offset, readSize)
 	if err != nil {
-		logger.Log.Fatal("Failed to read data", "error", err)
+		log.Fatal("Failed to read data", "error", err)
 	}
 
 	// Print file information
-	logger.Log.Info("Reading file content",
+	log.Info("Reading file content",
 		"fileName", *fileName,
 		"offset", *offset,
 		"size", readSize,
@@ -280,18 +260,19 @@ func executeReadCommand(sm *storage.Manager) {
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		fmt.Println()
 	}
+
+	log.Info("Read operation completed", "fileName", *fileName, "bytesRead", len(data))
 }
 
-// newDB establishes a connection to the database
-func newDB() *sql.DB {
-	// Connect to the database
+// newDB creates a new database connection
+func newDB(log *log.Logger) *sql.DB {
 	host := getEnvOrDefault("POSTGRES_HOST", "localhost")
 	port := getEnvOrDefault("POSTGRES_PORT", "5432")
 	user := getEnvOrDefault("POSTGRES_USER", "postgres")
 	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
 	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
 
-	logger.Log.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
+	log.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
 
 	// Construct the connection string
 	conn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
@@ -299,9 +280,16 @@ func newDB() *sql.DB {
 
 	db, err := sql.Open("postgres", conn)
 	if err != nil {
-		logger.Log.Fatal("Failed to create database connection", "error", err)
+		log.Fatal("Failed to create database connection", "error", err)
 	}
 
+	// Test the connection
+	err = db.Ping()
+	if err != nil {
+		log.Fatal("Failed to connect to database", "error", err)
+	}
+
+	log.Info("Connected to PostgreSQL database")
 	return db
 }
 

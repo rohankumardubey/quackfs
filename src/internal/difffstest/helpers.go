@@ -7,6 +7,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/vinimdocarmo/difffs/src/internal/logger"
 	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
@@ -17,7 +18,10 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 		t.Fatalf("Failed to open database connection: %v", err)
 	}
 
-	sm, err := storage.NewManager(db)
+	// Create a test log
+	log := logger.New(os.Stderr)
+
+	sm, err := storage.NewManager(db, log)
 	if err != nil {
 		t.Fatalf("Failed to create PostgreSQL storage manager: %v", err)
 	}

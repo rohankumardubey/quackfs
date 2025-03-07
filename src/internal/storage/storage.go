@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vinimdocarmo/difffs/src/internal/logger"
+	"github.com/charmbracelet/log"
 )
 
 type Layer struct {
@@ -41,22 +41,27 @@ func (l *Layer) entryCount() int {
 // Manager manages multiple layers and a global offset.
 // It uses a metadataStore to persist layer metadata and entry data.
 type Manager struct {
-	mu sync.RWMutex // Primary mutex for protecting all shared state
-	db *sql.DB
+	mu  sync.RWMutex // Primary mutex for protecting all shared state
+	db  *sql.DB
+	log *log.Logger
 }
 
 // NewManager creates (or reloads) a StorageManager using the provided metadataStore.
-func NewManager(db *sql.DB) (*Manager, error) {
-	logger.Log.Debug("Creating/reloading layer manager from metadata store")
+func NewManager(db *sql.DB, log *log.Logger) (*Manager, error) {
+	log.Debug("Creating/reloading layer manager from metadata store")
+
+	managerLog := log.With()
+	managerLog.SetPrefix("💽 storage")
 
 	sm := &Manager{
-		db: db,
+		db:  db,
+		log: managerLog,
 	}
 
 	// Check if any layers exist, if not create an initial layer
 	layers, err := sm.loadLayers()
 	if err != nil {
-		logger.Log.Error("Failed to check for existing layers", "error", err)
+		sm.log.Error("Failed to check for existing layers", "error", err)
 		return nil, fmt.Errorf("failed to check for existing layers: %w", err)
 	}
 
@@ -68,20 +73,20 @@ func NewManager(db *sql.DB) (*Manager, error) {
 		}
 	}
 
-	logger.Log.Debug("Layer manager initialization complete")
+	sm.log.Debug("Layer manager initialization complete")
 	return sm, nil
 }
 
 // createInitialLayer creates the very first layer when no layers exist
 func (sm *Manager) createInitialLayer(fileID int) error {
-	logger.Log.Debug("No existing layers found, creating initial layer")
+	sm.log.Debug("No existing layers found, creating initial layer")
 	initial := newLayer(fileID)
 	id, err := sm.recordNewLayer(initial)
 	if err != nil {
-		logger.Log.Error("Failed to record initial layer", "error", err)
+		sm.log.Error("Failed to record initial layer", "error", err)
 		return fmt.Errorf("failed to record initial layer: %w", err)
 	}
-	logger.Log.Debug("Initial layer created and recorded", "layerID", id)
+	sm.log.Debug("Initial layer created and recorded", "layerID", id)
 	return nil
 }
 
@@ -93,16 +98,16 @@ func (sm *Manager) ActiveLayer() *Layer {
 	// Use the new method to load only the active layer
 	active, err := sm.loadActiveLayer()
 	if err != nil {
-		logger.Log.Error("Failed to load active layer from metadata store", "error", err)
+		sm.log.Error("Failed to load active layer from metadata store", "error", err)
 		return nil
 	}
 
 	if active == nil {
-		logger.Log.Error("No active layer found in metadata store")
+		sm.log.Error("No active layer found in metadata store")
 		return nil
 	}
 
-	logger.Log.Debug("Got active layer", "layerID", active.ID, "entryCount", active.entryCount())
+	sm.log.Debug("Got active layer", "layerID", active.ID, "entryCount", active.entryCount())
 	return active
 }
 
@@ -115,14 +120,14 @@ func (sm *Manager) SealActiveLayer(fileName string) error {
 	// Get the file ID from the file name
 	fileID, err := sm.GetFileIDByName(fileName)
 	if err != nil {
-		logger.Log.Error("Failed to get file ID", "fileName", fileName, "error", err)
+		sm.log.Error("Failed to get file ID", "fileName", fileName, "error", err)
 		return fmt.Errorf("failed to get file ID: %w", err)
 	}
 
 	// Get the current active layer ID
 	layers, err := sm.loadLayers()
 	if err != nil {
-		logger.Log.Error("Failed to load layers from metadata store", "error", err)
+		sm.log.Error("Failed to load layers from metadata store", "error", err)
 		return fmt.Errorf("failed to load layers: %w", err)
 	}
 
@@ -131,10 +136,10 @@ func (sm *Manager) SealActiveLayer(fileName string) error {
 	}
 
 	current := layers[len(layers)-1]
-	logger.Log.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.entryCount())
+	sm.log.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.entryCount())
 
 	if err := sm.sealLayer(current.ID); err != nil {
-		logger.Log.Error("Failed to seal layer in metadata store", "layerID", current.ID, "error", err)
+		sm.log.Error("Failed to seal layer in metadata store", "layerID", current.ID, "error", err)
 		return fmt.Errorf("failed to seal layer %d: %w", current.ID, err)
 	}
 
@@ -142,11 +147,11 @@ func (sm *Manager) SealActiveLayer(fileName string) error {
 	id, err := sm.recordNewLayer(newLayer)
 
 	if err != nil {
-		logger.Log.Error("Failed to record new layer", "error", err)
+		sm.log.Error("Failed to record new layer", "error", err)
 		return fmt.Errorf("failed to record new layer: %w", err)
 	}
 
-	logger.Log.Debug("Created new active layer after sealing", "newLayerID", id)
+	sm.log.Debug("Created new active layer after sealing", "newLayerID", id)
 
 	return nil
 }
@@ -157,60 +162,60 @@ func (sm *Manager) Write(fileName string, data []byte, offset uint64) (layerID i
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	logger.Log.Debug("Writing data", "fileName", fileName, "size", len(data), "offset", offset)
+	sm.log.Debug("Writing data", "fileName", fileName, "size", len(data), "offset", offset)
 
 	// Get the file ID from the file name
 	fileID, err := sm.GetFileIDByName(fileName)
 	if err != nil {
-		logger.Log.Error("Failed to get file ID", "fileName", fileName, "error", err)
+		sm.log.Error("Failed to get file ID", "fileName", fileName, "error", err)
 		return 0, 0, fmt.Errorf("failed to get file ID: %w", err)
 	}
 	if fileID == 0 {
-		logger.Log.Error("File not found", "fileName", fileName)
+		sm.log.Error("File not found", "fileName", fileName)
 		return 0, 0, fmt.Errorf("file not found")
 	}
 
 	// Get the active layer
 	layers, err := sm.LoadLayersByFileID(fileID)
 	if err != nil {
-		logger.Log.Error("Failed to load layers for file from metadata store", "fileID", fileID, "error", err)
+		sm.log.Error("Failed to load layers for file from metadata store", "fileID", fileID, "error", err)
 		return 0, 0, fmt.Errorf("failed to load layers for file: %w", err)
 	}
 
 	if len(layers) == 0 {
-		logger.Log.Error("No active layer found for file", "fileID", fileID)
+		sm.log.Error("No active layer found for file", "fileID", fileID)
 		return 0, 0, fmt.Errorf("no active layer found for file")
 	} else {
 		fileSize, err := sm.calculateVirtualFileSize(fileID)
 		if err != nil {
-			logger.Log.Error("Failed to calculate file size", "fileID", fileID, "error", err)
+			sm.log.Error("Failed to calculate file size", "fileID", fileID, "error", err)
 			return 0, 0, fmt.Errorf("failed to calculate file size: %w", err)
 		}
 
 		if offset > fileSize {
-			logger.Log.Error("Write offset is beyond file size", "offset", offset, "fileSize", fileSize)
+			sm.log.Error("Write offset is beyond file size", "offset", offset, "fileSize", fileSize)
 			return 0, 0, fmt.Errorf("write offset is beyond file size")
 		}
 
 		active := layers[len(layers)-1]
 		writtenOffset = offset
 		active.addEntry(writtenOffset, data)
-		logger.Log.Debug("Added entry to active layer", "layerID", active.ID, "offset", writtenOffset, "dataSize", len(data))
+		sm.log.Debug("Added entry to active layer", "layerID", active.ID, "offset", writtenOffset, "dataSize", len(data))
 
 		// Calculate ranges and record entry in metadata store
 		layerRange, fileRange, err := sm.calculateRanges(active, writtenOffset, len(data))
 
 		if err != nil {
-			logger.Log.Errorf("Failed to calculate ranges: %v", err)
+			sm.log.Error("Failed to calculate ranges", "layerID", active.ID, "offset", writtenOffset, "error", err)
 			return 0, 0, fmt.Errorf("failed to calculate ranges: %w", err)
 		}
 
 		if err = sm.recordEntry(active.ID, writtenOffset, data, layerRange, fileRange); err != nil {
-			logger.Log.Error("Failed to record entry", "layerID", active.ID, "offset", writtenOffset, "error", err)
+			sm.log.Error("Failed to record entry", "layerID", active.ID, "offset", writtenOffset, "error", err)
 			return 0, 0, fmt.Errorf("failed to record entry: %w", err)
 		}
 
-		logger.Log.Debug("Data written successfully", "layerID", active.ID, "offset", writtenOffset, "size", len(data))
+		sm.log.Debug("Data written successfully", "layerID", active.ID, "offset", writtenOffset, "size", len(data))
 		return active.ID, writtenOffset, nil
 	}
 }
@@ -222,7 +227,7 @@ func (sm *Manager) calculateRanges(layer *Layer, offset uint64, dataSize int) ([
 	// Retrieve the layer base from the metadata store.
 	baseOffset, err := sm.GetLayerBase(layer.ID)
 	if err != nil {
-		logger.Log.Error("Failed to retrieve layer base", "layerID", layer.ID, "error", err)
+		sm.log.Error("Failed to retrieve layer base", "layerID", layer.ID, "error", err)
 		return [2]uint64{}, [2]uint64{}, fmt.Errorf("failed to retrieve layer base: %w", err)
 	}
 
@@ -231,7 +236,7 @@ func (sm *Manager) calculateRanges(layer *Layer, offset uint64, dataSize int) ([
 		layerStart = offset - baseOffset
 	} else {
 		layerStart = 0
-		logger.Log.Warn("Write offset is before layer base", "offset", offset, "layerBase", baseOffset, "layerID", layer.ID)
+		sm.log.Error("Write offset is before layer base", "offset", offset, "layerBase", baseOffset, "layerID", layer.ID)
 	}
 	layerEnd := layerStart + dataLength
 	layerRange := [2]uint64{layerStart, layerEnd}
@@ -241,7 +246,7 @@ func (sm *Manager) calculateRanges(layer *Layer, offset uint64, dataSize int) ([
 	fileEnd := offset + dataLength
 	fileRange := [2]uint64{fileStart, fileEnd}
 
-	logger.Log.Debug("Calculated ranges for entry",
+	sm.log.Debug("Calculated ranges for entry",
 		"layerID", layer.ID,
 		"layerRange", layerRange,
 		"fileRange", fileRange)
@@ -258,7 +263,7 @@ func (sm *Manager) FileSize(id int) (uint64, error) {
 
 // GetDataRange returns a slice of data from the given offset up to size bytes.
 func (sm *Manager) GetDataRange(fileName string, offset uint64, size uint64) ([]byte, error) {
-	logger.Log.Debug("Getting data range from database", "fileName", fileName, "offset", offset, "requestedSize", size)
+	sm.log.Debug("Getting data range from database", "fileName", fileName, "offset", offset, "requestedSize", size)
 
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -266,11 +271,11 @@ func (sm *Manager) GetDataRange(fileName string, offset uint64, size uint64) ([]
 	// Get the file ID from the file name
 	fileID, err := sm.GetFileIDByName(fileName)
 	if fileID == 0 {
-		logger.Log.Warn("File not found", "fileName", fileName)
+		sm.log.Error("File not found", "fileName", fileName)
 		return nil, fmt.Errorf("file not found")
 	}
 	if err != nil {
-		logger.Log.Error("Failed to get file ID", "fileName", fileName, "error", err)
+		sm.log.Error("Failed to get file ID", "fileName", fileName, "error", err)
 		return nil, fmt.Errorf("failed to get file ID: %w", err)
 	}
 
@@ -278,7 +283,7 @@ func (sm *Manager) GetDataRange(fileName string, offset uint64, size uint64) ([]
 	fullContent := sm.GetFullContentForFile(fileID)
 
 	if offset >= uint64(len(fullContent)) {
-		logger.Log.Debug("Requested offset beyond content size", "offset", offset, "contentSize", len(fullContent))
+		sm.log.Debug("Requested offset beyond content size", "offset", offset, "contentSize", len(fullContent))
 		return []byte{}, nil
 	}
 
@@ -288,7 +293,7 @@ func (sm *Manager) GetDataRange(fileName string, offset uint64, size uint64) ([]
 	result := make([]byte, end-offset)
 	copy(result, fullContent[offset:end])
 
-	logger.Log.Debug("Returning data range", "offset", offset, "end", end, "returnedSize", end-offset)
+	sm.log.Debug("Returning data range", "offset", offset, "end", end, "returnedSize", end-offset)
 	return result, nil
 }
 
@@ -297,19 +302,19 @@ func (sm *Manager) GetFullContentForFile(id int) []byte {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	logger.Log.Debug("Getting full content for file", "fileID", id)
+	sm.log.Debug("Getting full content for file", "fileID", id)
 
 	// Load layers for this specific file
 	layers, err := sm.LoadLayersByFileID(id)
 	if err != nil {
-		logger.Log.Error("Failed to load layers for file", "fileID", id, "error", err)
+		sm.log.Error("Failed to load layers for file", "fileID", id, "error", err)
 		return []byte{}
 	}
 
 	// Load all entries
 	entriesMap, err := sm.loadEntries()
 	if err != nil {
-		logger.Log.Error("Failed to load entries from metadata store", "error", err)
+		sm.log.Error("Failed to load entries from metadata store", "error", err)
 		return []byte{}
 	}
 
@@ -349,7 +354,7 @@ func (sm *Manager) GetFullContentForFile(id int) []byte {
 		}
 	}
 
-	logger.Log.Debug("Full content retrieved for file", "fileID", id, "size", len(buf))
+	sm.log.Debug("Full content retrieved for file", "fileID", id, "size", len(buf))
 	return buf
 }
 
@@ -395,13 +400,13 @@ type EntryRecord struct {
 
 // InsertFile inserts a new file into the files table and returns its ID.
 func (sm *Manager) InsertFile(name string) (int, error) {
-	logger.Log.Debug("Inserting new file into metadata store", "name", name)
+	sm.log.Debug("Inserting new file into metadata store", "name", name)
 
 	query := `INSERT INTO files (name) VALUES ($1) RETURNING id;`
 	var fileID int
 	err := sm.db.QueryRow(query, name).Scan(&fileID)
 	if err != nil {
-		logger.Log.Error("Failed to insert new file", "name", name, "error", err)
+		sm.log.Error("Failed to insert new file", "name", name, "error", err)
 		return 0, err
 	}
 
@@ -409,11 +414,11 @@ func (sm *Manager) InsertFile(name string) (int, error) {
 	layer := newLayer(fileID)
 	_, err = sm.recordNewLayer(layer)
 	if err != nil {
-		logger.Log.Error("Failed to create initial layer for new file", "fileID", fileID, "error", err)
+		sm.log.Error("Failed to create initial layer for new file", "fileID", fileID, "error", err)
 		return 0, fmt.Errorf("failed to create initial layer for new file: %w", err)
 	}
 
-	logger.Log.Debug("File inserted successfully", "name", name, "fileID", fileID)
+	sm.log.Debug("File inserted successfully", "name", name, "fileID", fileID)
 	return fileID, nil
 }
 
@@ -424,10 +429,10 @@ func (sm *Manager) GetFileIDByName(name string) (int, error) {
 	err := sm.db.QueryRow(query, name).Scan(&fileID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			logger.Log.Warn("File not found", "name", name)
+			sm.log.Warn("File not found", "name", name)
 			return 0, nil
 		}
-		logger.Log.Error("Failed to retrieve file ID", "name", name, "error", err)
+		sm.log.Error("Failed to retrieve file ID", "name", name, "error", err)
 		return 0, err
 	}
 
@@ -436,42 +441,42 @@ func (sm *Manager) GetFileIDByName(name string) (int, error) {
 
 // recordNewLayer inserts a new layer record.
 func (sm *Manager) recordNewLayer(layer *Layer) (int, error) {
-	logger.Log.Debug("Recording new layer in metadata store", "layerID", layer.ID)
+	sm.log.Debug("Recording new layer in metadata store", "layerID", layer.ID)
 
 	query := `INSERT INTO layers (file_id, sealed) VALUES ($1, 0) RETURNING id;`
 	var newID int
 	err := sm.db.QueryRow(query, layer.FileID).Scan(&newID)
 	if err != nil {
-		logger.Log.Error("Failed to record new layer", "layerID", layer.ID, "error", err)
+		sm.log.Error("Failed to record new layer", "layerID", layer.ID, "error", err)
 		return 0, err
 	}
 
 	layer.ID = newID
 
-	logger.Log.Debug("Layer recorded successfully", "layerID", newID)
+	sm.log.Debug("Layer recorded successfully", "layerID", newID)
 	return newID, nil
 }
 
 // sealLayer marks the layer with the given id as sealed.
 func (sm *Manager) sealLayer(layerID int) error {
-	logger.Log.Debug("Sealing layer in metadata store", "layerID", layerID)
+	sm.log.Debug("Sealing layer in metadata store", "layerID", layerID)
 
 	query := `UPDATE layers SET sealed = 1 WHERE id = $1;`
 	result, err := sm.db.Exec(query, layerID)
 	if err != nil {
-		logger.Log.Error("Failed to seal layer", "layerID", layerID, "error", err)
+		sm.log.Error("Failed to seal layer", "layerID", layerID, "error", err)
 		return err
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	logger.Log.Debug("Layer sealed successfully", "layerID", layerID, "rowsAffected", rowsAffected)
+	sm.log.Debug("Layer sealed successfully", "layerID", layerID, "rowsAffected", rowsAffected)
 	return nil
 }
 
 // recordEntry inserts a new entry record.
 // Now includes layer_range and file_range parameters
 func (sm *Manager) recordEntry(layerID int, offset uint64, data []byte, layerRange [2]uint64, fileRange [2]uint64) error {
-	logger.Log.Debug("Recording entry in metadata store",
+	sm.log.Debug("Recording entry in metadata store",
 		"layerID", layerID,
 		"offset", offset,
 		"dataSize", len(data),
@@ -485,11 +490,11 @@ func (sm *Manager) recordEntry(layerID int, offset uint64, data []byte, layerRan
 	         VALUES ($1, $2, $3, $4, $5);`
 	_, err := sm.db.Exec(query, layerID, offset, data, layerRangeStr, fileRangeStr)
 	if err != nil {
-		logger.Log.Error("Failed to record entry", "layerID", layerID, "offset", offset, "error", err)
+		sm.log.Error("Failed to record entry", "layerID", layerID, "offset", offset, "error", err)
 		return err
 	}
 
-	logger.Log.Debug("Entry recorded successfully", "layerID", layerID, "offset", offset, "dataSize", len(data))
+	sm.log.Debug("Entry recorded successfully", "layerID", layerID, "offset", offset, "dataSize", len(data))
 	return nil
 }
 
@@ -497,12 +502,12 @@ func (sm *Manager) recordEntry(layerID int, offset uint64, data []byte, layerRan
 // It returns a slice of layers (with only the metadata), the next available layer id,
 // and the highest base value among layers.
 func (sm *Manager) loadLayers() ([]*Layer, error) {
-	logger.Log.Debug("Loading layers from metadata store")
+	sm.log.Debug("Loading layers from metadata store")
 
 	query := `SELECT id, file_id, sealed FROM layers ORDER BY id ASC;`
 	rows, err := sm.db.Query(query)
 	if err != nil {
-		logger.Log.Error("Failed to query layers", "error", err)
+		sm.log.Error("Failed to query layers", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -513,7 +518,7 @@ func (sm *Manager) loadLayers() ([]*Layer, error) {
 	for rows.Next() {
 		var id, fileID, sealedInt int
 		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
-			logger.Log.Error("Error scanning layer row", "error", err)
+			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err
 		}
 
@@ -522,22 +527,22 @@ func (sm *Manager) loadLayers() ([]*Layer, error) {
 		layers = append(layers, layer)
 
 		sealed := sealedInt != 0
-		logger.Log.Debug("Loaded layer", "layerID", id, "sealed", sealed)
+		sm.log.Debug("Loaded layer", "layerID", id, "sealed", sealed)
 		layerCount++
 	}
 
-	logger.Log.Debug("Layers loaded successfully", "count", layerCount)
+	sm.log.Debug("Layers loaded successfully", "count", layerCount)
 	return layers, nil
 }
 
 // loadEntries loads all entry records from the database and groups them by layer_id.
 func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
-	logger.Log.Debug("Loading entries from metadata store")
+	sm.log.Debug("Loading entries from metadata store")
 
 	query := `SELECT layer_id, offset_value, data, layer_range, file_range FROM entries ORDER BY layer_id, offset_value ASC;`
 	rows, err := sm.db.Query(query)
 	if err != nil {
-		logger.Log.Error("Failed to query entries", "error", err)
+		sm.log.Error("Failed to query entries", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -553,7 +558,7 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 		var layerRangeStr, fileRangeStr sql.NullString
 
 		if err := rows.Scan(&layerID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
-			logger.Log.Error("Error scanning entry row", "error", err)
+			sm.log.Error("Error scanning entry row", "error", err)
 			return nil, err
 		}
 
@@ -563,12 +568,12 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 			if len(parts) == 2 {
 				start, err := strconv.ParseUint(parts[0], 10, 8)
 				if err != nil {
-					logger.Log.Error("Error parsing layer range start", "value", parts[0], "error", err)
+					sm.log.Error("Error parsing layer range start", "value", parts[0], "error", err)
 					return nil, err
 				}
 				end, err := strconv.ParseUint(parts[1], 10, 8)
 				if err != nil {
-					logger.Log.Error("Error parsing layer range end", "value", parts[1], "error", err)
+					sm.log.Error("Error parsing layer range end", "value", parts[1], "error", err)
 					return nil, err
 				}
 				layerRange[0] = start
@@ -582,12 +587,12 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 			if len(parts) == 2 {
 				start, err := strconv.ParseUint(parts[0], 10, 64)
 				if err != nil {
-					logger.Log.Error("Error parsing file range start", "value", parts[0], "error", err)
+					sm.log.Error("Error parsing file range start", "value", parts[0], "error", err)
 					return nil, err
 				}
 				end, err := strconv.ParseUint(parts[1], 10, 64)
 				if err != nil {
-					logger.Log.Error("Error parsing file range end", "value", parts[1], "error", err)
+					sm.log.Error("Error parsing file range end", "value", parts[1], "error", err)
 					return nil, err
 				}
 				fileRange[0] = start
@@ -605,11 +610,11 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 
 		entriesCount++
 		totalDataSize += len(data)
-		logger.Log.Debug("Loaded entry", "layerID", layerID, "offset", offset, "dataSize", len(data))
+		sm.log.Debug("Loaded entry", "layerID", layerID, "offset", offset, "dataSize", len(data))
 	}
 
 	layerCount := len(result)
-	logger.Log.Debug("Entries loaded successfully",
+	sm.log.Debug("Entries loaded successfully",
 		"totalEntries", entriesCount,
 		"layerCount", layerCount,
 		"totalDataSize", totalDataSize)
@@ -620,7 +625,7 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 // loadActiveLayer loads only the active (unsealed) layer and its entries.
 // Returns the active layer or nil if no active layer is found.
 func (sm *Manager) loadActiveLayer() (*Layer, error) {
-	logger.Log.Debug("Loading active (unsealed) layer from metadata store")
+	sm.log.Debug("Loading active (unsealed) layer from metadata store")
 
 	// Use a single query with JOIN to get the active layer and its entries
 	query := `
@@ -634,14 +639,14 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 
 	rows, err := sm.db.Query(query)
 	if err != nil {
-		logger.Log.Error("Failed to query active layer and entries", "error", err)
+		sm.log.Error("Failed to query active layer and entries", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
 
 	// Check if we found any rows
 	if !rows.Next() {
-		logger.Log.Debug("No active layer found")
+		sm.log.Debug("No active layer found")
 		return nil, nil
 	}
 
@@ -664,7 +669,7 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 
 		// Scan the current row
 		if err := rows.Scan(&id, &fileID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
-			logger.Log.Error("Error scanning row", "error", err)
+			sm.log.Error("Error scanning row", "error", err)
 			return nil, err
 		}
 
@@ -672,10 +677,10 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 		if layerID == 0 {
 			layerID = id
 			layer.ID = id
-			logger.Log.Debug("Found active layer", "layerID", id)
+			sm.log.Debug("Found active layer", "layerID", id)
 		} else if id != layerID {
 			// This shouldn't happen with our query, but check anyway
-			logger.Log.Warn("Unexpected layer ID in results", "expected", layerID, "got", id)
+			sm.log.Error("Unexpected layer ID in results", "expected", layerID, "got", id)
 		}
 
 		// Add entry data if present
@@ -684,7 +689,7 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 			layer.addEntry(offsetValue, data)
 			entriesCount++
 			totalDataSize += len(data)
-			logger.Log.Debug("Loaded entry", "layerID", id, "offset", offsetValue, "dataSize", len(data))
+			sm.log.Debug("Loaded entry", "layerID", id, "offset", offsetValue, "dataSize", len(data))
 		}
 
 		// Move to next row or exit loop if done
@@ -695,11 +700,11 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 
 	// Check for errors from iterating over rows
 	if err = rows.Err(); err != nil {
-		logger.Log.Error("Error iterating over rows", "error", err)
+		sm.log.Error("Error iterating over rows", "error", err)
 		return nil, err
 	}
 
-	logger.Log.Debug("Active layer loaded successfully",
+	sm.log.Debug("Active layer loaded successfully",
 		"layerID", layerID,
 		"entriesCount", entriesCount,
 		"totalDataSize", totalDataSize)
@@ -709,19 +714,19 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 
 // close closes the database.
 func (sm *Manager) Close() error {
-	logger.Log.Debug("Closing metadata store database connection")
+	sm.log.Debug("Closing metadata store database connection")
 	err := sm.db.Close()
 	if err != nil {
-		logger.Log.Error("Error closing database connection", "error", err)
+		sm.log.Error("Error closing database connection", "error", err)
 	} else {
-		logger.Log.Debug("Database connection closed successfully")
+		sm.log.Debug("Database connection closed successfully")
 	}
 	return err
 }
 
 // calculateVirtualFileSize calculates the total byte size of the virtual file from all layers and their entries, respecting layer creation order and handling overlapping file ranges.
 func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
-	logger.Log.Debug("Calculating virtual file size from metadata store", "fileID", fileID)
+	sm.log.Debug("Calculating virtual file size from metadata store", "fileID", fileID)
 
 	query := `
 		SELECT e.file_range
@@ -732,7 +737,7 @@ func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
 	`
 	rows, err := sm.db.Query(query, fileID)
 	if err != nil {
-		logger.Log.Error("Failed to query file ranges", "error", err, "fileID", fileID)
+		sm.log.Error("Failed to query file ranges", "error", err, "fileID", fileID)
 		return 0, err
 	}
 	defer rows.Close()
@@ -748,7 +753,7 @@ func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
 		var fileRangeStr sql.NullString
 
 		if err := rows.Scan(&fileRangeStr); err != nil {
-			logger.Log.Error("Error scanning file range row", "error", err)
+			sm.log.Error("Error scanning file range row", "error", err)
 			return 0, err
 		}
 
@@ -757,12 +762,12 @@ func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
 			if len(parts) == 2 {
 				start, err := strconv.ParseUint(parts[0], 10, 64)
 				if err != nil {
-					logger.Log.Error("Error parsing file range start", "value", parts[0], "error", err)
+					sm.log.Error("Error parsing file range start", "value", parts[0], "error", err)
 					return 0, err
 				}
 				end, err := strconv.ParseUint(parts[1], 10, 64)
 				if err != nil {
-					logger.Log.Error("Error parsing file range end", "value", parts[1], "error", err)
+					sm.log.Error("Error parsing file range end", "value", parts[1], "error", err)
 					return 0, err
 				}
 				ranges = append(ranges, Range{start: start, end: end})
@@ -771,7 +776,7 @@ func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
 	}
 
 	if err = rows.Err(); err != nil {
-		logger.Log.Error("Error iterating over file range rows", "error", err)
+		sm.log.Error("Error iterating over file range rows", "error", err)
 		return 0, err
 	}
 
@@ -790,18 +795,18 @@ func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
 		totalSize = maxEnd
 	}
 
-	logger.Log.Debug("Virtual file size calculated successfully", "totalSize", totalSize)
+	sm.log.Debug("Virtual file size calculated successfully", "totalSize", totalSize)
 	return totalSize, nil
 }
 
 // LoadLayersByFileID loads all layers associated with a specific file ID from the database.
 func (sm *Manager) LoadLayersByFileID(fileID int) ([]*Layer, error) {
-	logger.Log.Debug("Loading layers for file from metadata store", "fileID", fileID)
+	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
 	query := `SELECT id, file_id, sealed FROM layers WHERE file_id = $1 ORDER BY id ASC;`
 	rows, err := sm.db.Query(query, fileID)
 	if err != nil {
-		logger.Log.Error("Failed to query layers for file", "fileID", fileID, "error", err)
+		sm.log.Error("Failed to query layers for file", "fileID", fileID, "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -812,7 +817,7 @@ func (sm *Manager) LoadLayersByFileID(fileID int) ([]*Layer, error) {
 	for rows.Next() {
 		var id, sealedInt int
 		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
-			logger.Log.Error("Error scanning layer row", "error", err)
+			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err
 		}
 
@@ -821,22 +826,22 @@ func (sm *Manager) LoadLayersByFileID(fileID int) ([]*Layer, error) {
 		layers = append(layers, layer)
 
 		sealed := sealedInt != 0
-		logger.Log.Debug("Loaded layer for file", "layerID", id, "sealed", sealed)
+		sm.log.Debug("Loaded layer for file", "layerID", id, "sealed", sealed)
 		layerCount++
 	}
 
-	logger.Log.Debug("Layers for file loaded successfully", "fileID", fileID, "count", layerCount)
+	sm.log.Debug("Layers for file loaded successfully", "fileID", fileID, "count", layerCount)
 	return layers, nil
 }
 
 // deleteFile removes a file and its associated layers and entries from the database within a transaction.
 func (sm *Manager) DeleteFile(name string) error {
-	logger.Log.Debug("Deleting file and its associated data from metadata store", "name", name)
+	sm.log.Debug("Deleting file and its associated data from metadata store", "name", name)
 
 	// Begin a transaction
 	tx, err := sm.db.Begin()
 	if err != nil {
-		logger.Log.Error("Failed to begin transaction", "error", err)
+		sm.log.Error("Failed to begin transaction", "error", err)
 		return err
 	}
 
@@ -846,12 +851,12 @@ func (sm *Manager) DeleteFile(name string) error {
 			tx.Rollback()
 			panic(p) // re-throw panic after Rollback
 		} else if err != nil {
-			logger.Log.Error("Transaction failed, rolling back", "error", err)
+			sm.log.Error("Transaction failed, rolling back", "error", err)
 			tx.Rollback()
 		} else {
 			err = tx.Commit()
 			if err != nil {
-				logger.Log.Error("Failed to commit transaction", "error", err)
+				sm.log.Error("Failed to commit transaction", "error", err)
 			}
 		}
 	}()
@@ -859,12 +864,12 @@ func (sm *Manager) DeleteFile(name string) error {
 	// Retrieve the file ID
 	fileID, err := sm.GetFileIDByName(name)
 	if err != nil {
-		logger.Log.Error("Failed to retrieve file ID", "name", name, "error", err)
+		sm.log.Error("Failed to retrieve file ID", "name", name, "error", err)
 		return err
 	}
 
 	if fileID == 0 {
-		logger.Log.Warn("File not found, nothing to delete", "name", name)
+		sm.log.Error("File not found, nothing to delete", "name", name)
 		return nil
 	}
 
@@ -872,7 +877,7 @@ func (sm *Manager) DeleteFile(name string) error {
 	deleteEntriesQuery := `DELETE FROM entries WHERE layer_id IN (SELECT id FROM layers WHERE file_id = $1);`
 	_, err = tx.Exec(deleteEntriesQuery, fileID)
 	if err != nil {
-		logger.Log.Error("Failed to delete entries for file", "name", name, "error", err)
+		sm.log.Error("Failed to delete entries for file", "name", name, "error", err)
 		return err
 	}
 
@@ -880,7 +885,7 @@ func (sm *Manager) DeleteFile(name string) error {
 	deleteLayersQuery := `DELETE FROM layers WHERE file_id = $1;`
 	_, err = tx.Exec(deleteLayersQuery, fileID)
 	if err != nil {
-		logger.Log.Error("Failed to delete layers for file", "name", name, "error", err)
+		sm.log.Error("Failed to delete layers for file", "name", name, "error", err)
 		return err
 	}
 
@@ -888,11 +893,11 @@ func (sm *Manager) DeleteFile(name string) error {
 	deleteFileQuery := `DELETE FROM files WHERE id = $1;`
 	_, err = tx.Exec(deleteFileQuery, fileID)
 	if err != nil {
-		logger.Log.Error("Failed to delete file", "name", name, "error", err)
+		sm.log.Error("Failed to delete file", "name", name, "error", err)
 		return err
 	}
 
-	logger.Log.Info("File and its associated data deleted successfully", "name", name)
+	sm.log.Info("File and its associated data deleted successfully", "name", name)
 	return nil
 }
 
@@ -914,7 +919,7 @@ func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
 	query := `SELECT id, name FROM files;`
 	rows, err := sm.db.Query(query)
 	if err != nil {
-		logger.Log.Error("Failed to query files", "error", err)
+		sm.log.Error("Failed to query files", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -923,14 +928,14 @@ func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
 	for rows.Next() {
 		var file fileInfo
 		if err := rows.Scan(&file.ID, &file.Name); err != nil {
-			logger.Log.Error("Failed to scan file row", "error", err)
+			sm.log.Error("Failed to scan file row", "error", err)
 			return nil, err
 		}
 		files = append(files, file)
 	}
 
 	if err := rows.Err(); err != nil {
-		logger.Log.Error("Error iterating file rows", "error", err)
+		sm.log.Error("Error iterating file rows", "error", err)
 		return nil, err
 	}
 

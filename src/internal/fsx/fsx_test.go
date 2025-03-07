@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vinimdocarmo/difffs/src/internal/difffstest"
+	"github.com/vinimdocarmo/difffs/src/internal/logger"
 	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
@@ -130,6 +131,9 @@ func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error)
 
 	sm, smCleanup := difffstest.SetupStorageManager(t)
 
+	// Create a test log
+	log := logger.New(os.Stderr)
+
 	// Setup error channel to monitor mount process
 	errChan := make(chan error, 1)
 
@@ -142,7 +146,7 @@ func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error)
 
 	// Serve the filesystem in a goroutine
 	go func() {
-		errChan <- fs.Serve(conn, NewFS(sm))
+		errChan <- fs.Serve(conn, NewFS(sm, log))
 	}()
 
 	// Create cleanup function
