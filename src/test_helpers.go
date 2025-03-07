@@ -79,9 +79,6 @@ func SetupFuseMount(t *testing.T) (string, func(), chan error) {
 	// Setup the layer manager
 	lm, lmCleanup := SetupLayerManager(t)
 
-	// Override the global layer manager used by the FUSE filesystem
-	globalLM = lm
-
 	// Setup error channel to monitor mount process
 	errChan := make(chan error, 1)
 
@@ -95,7 +92,7 @@ func SetupFuseMount(t *testing.T) (string, func(), chan error) {
 
 	// Serve the filesystem in a goroutine
 	go func() {
-		errChan <- fs.Serve(conn, FS{})
+		errChan <- fs.Serve(conn, NewFS(lm))
 	}()
 
 	// Create cleanup function

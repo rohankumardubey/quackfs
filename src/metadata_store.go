@@ -59,10 +59,10 @@ type EntryRecord struct {
 // The connStr should be a PostgreSQL connection string in keyword/value format:
 // "host=localhost port=5432 user=postgres password=postgres dbname=difffs sslmode=disable"
 // Alternatively, URL format is also supported: "postgres://username:password@localhost/dbname?sslmode=disable"
-func NewMetadataStore(connStr string) (*MetadataStore, error) {
+func NewMetadataStore(conn string) (*MetadataStore, error) {
 	Logger.Debug("Creating new metadata store with connection string")
 
-	db, err := sql.Open("postgres", connStr)
+	db, err := sql.Open("postgres", conn)
 	if err != nil {
 		Logger.Error("Failed to open database connection", "error", err)
 		return nil, err

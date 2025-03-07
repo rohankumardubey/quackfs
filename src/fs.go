@@ -11,63 +11,25 @@ import (
 )
 
 // FS implements the FUSE filesystem.
-type FS struct{}
+type FS struct {
+	lm *LayerManager
+}
 
 // Check interface satisfied
 var _ fs.FS = (*FS)(nil)
 
-var globalLM *LayerManager
-
-// initFS initializes the global layer manager using a PostgreSQL metadata store.
-// The connection string is constructed from environment variables or defaults to a local connection.
-func initFS() {
-	Logger.Debug("Initializing filesystem")
-	// Get PostgreSQL connection details from environment variables or use defaults
-	host := getEnvOrDefault("POSTGRES_HOST", "localhost")
-	port := getEnvOrDefault("POSTGRES_PORT", "5432")
-	user := getEnvOrDefault("POSTGRES_USER", "postgres")
-	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
-	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
-
-	Logger.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
-
-	// Construct the connection string
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		host, port, user, password, dbname)
-
-	Logger.Debug("Connecting to metadata store", "host", host, "port", port, "user", user, "dbname", dbname)
-	ms, err := NewMetadataStore(connStr)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create metadata store: %v", err))
-	}
-	Logger.Info("Metadata store created successfully")
-
-	Logger.Debug("Initializing layer manager")
-	lm, err := NewLayerManager(ms)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create layer manager: %v", err))
-	}
-	Logger.Info("Layer manager created successfully")
-
-	globalLM = lm
-	Logger.Debug("Filesystem initialization complete")
+func NewFS(lm *LayerManager) *FS {
+	return &FS{lm: lm}
 }
 
-// getEnvOrDefault returns the environment variable value or a default if not set
-func getEnvOrDefault(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
-}
-
-func (FS) Root() (fs.Node, error) {
-	Logger.Debug("Getting filesystem root")
-	return Dir{}, nil
+func (fs *FS) Root() (fs.Node, error) {
+	return Dir{lm: fs.lm}, nil
 }
 
 // Dir represents the root directory.
-type Dir struct{}
+type Dir struct {
+	lm *LayerManager
+}
 
 var _ fs.Node = (*Dir)(nil)
 var _ fs.NodeStringLookuper = (*Dir)(nil)
@@ -86,11 +48,11 @@ func (Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 }
 
 // Lookup looks up a specific file in the directory.
-func (Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
+func (dir Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	Logger.Debug("Looking up file", "name", name)
 
 	// Check if the file exists in our database
-	fileID, err := globalLM.metadata.GetFileIDByName(name)
+	fileID, err := dir.lm.metadata.GetFileIDByName(name)
 	if err != nil || fileID == 0 {
 		Logger.Debug("File not found in database", "name", name)
 		return nil, fuse.ENOENT
@@ -102,15 +64,16 @@ func (Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		created:  time.Now(),
 		modified: time.Now(),
 		accessed: time.Now(),
+		lm:       dir.lm,
 	}, nil
 }
 
-func (Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+func (dir Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	Logger.Debug("Reading directory contents")
 	entries := []fuse.Dirent{}
 
 	// Query the database for all files
-	rows, err := globalLM.metadata.db.Query("SELECT name FROM files")
+	rows, err := dir.lm.metadata.db.Query("SELECT name FROM files")
 	if err != nil {
 		Logger.Error("Failed to read directory from database", "error", err)
 		return nil, err
@@ -137,7 +100,7 @@ func (Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 }
 
 // Remove handles the removal of a file or directory.
-func (Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+func (dir Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	Logger.Debug("Directory received remove request", "name", req.Name)
 
 	// For directories, we would check req.Dir, but we don't support directory removal yet
@@ -147,7 +110,7 @@ func (Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	}
 
 	// For files, we need to delete the file from our database
-	err := globalLM.metadata.DeleteFile(req.Name)
+	err := dir.lm.metadata.DeleteFile(req.Name)
 	if err != nil {
 		Logger.Error("Failed to remove file from database", "name", req.Name, "error", err)
 		return err
@@ -158,11 +121,11 @@ func (Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 }
 
 // Create creates and opens a file.
-func (Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
+func (dir Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
 	Logger.Info("Creating file", "filename", req.Name, "flags", req.Flags, "mode", req.Mode)
 
 	// Insert the file into the database
-	_, err := globalLM.metadata.InsertFile(req.Name)
+	_, err := dir.lm.metadata.InsertFile(req.Name)
 	if err != nil {
 		Logger.Error("Failed to insert file into database", "name", req.Name, "error", err)
 		return nil, nil, err
@@ -175,6 +138,7 @@ func (Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Creat
 		modified: time.Now(),
 		accessed: time.Now(),
 		fileSize: 0,
+		lm:       dir.lm,
 	}
 
 	Logger.Debug("File created successfully", "filename", req.Name)
@@ -188,6 +152,7 @@ type File struct {
 	modified time.Time
 	accessed time.Time
 	fileSize uint64
+	lm       *LayerManager
 }
 
 var _ fs.Node = (*File)(nil)
@@ -205,13 +170,13 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	Logger.Debug("Getting file attributes", "name", f.name)
 
 	// Get file metadata from the database
-	fileID, err := globalLM.metadata.GetFileIDByName(f.name)
+	fileID, err := f.lm.metadata.GetFileIDByName(f.name)
 	if err != nil {
 		Logger.Error("Failed to get file ID", "name", f.name, "error", err)
 		return err
 	}
 
-	size, err := globalLM.FileSize(fileID)
+	size, err := f.lm.FileSize(fileID)
 	if err != nil {
 		Logger.Error("Failed to get file size", "name", f.name, "error", err)
 		return err
@@ -236,7 +201,7 @@ func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 	Logger.Debug("Reading file", "name", f.name, "offset", req.Offset, "size", req.Size)
 
 	// Read from the layer manager for all files
-	data, err := globalLM.GetDataRange(f.name, uint64(req.Offset), uint64(req.Size))
+	data, err := f.lm.GetDataRange(f.name, uint64(req.Offset), uint64(req.Size))
 	if err != nil {
 		Logger.Error("Failed to read data", "name", f.name, "error", err)
 		return err
@@ -257,7 +222,7 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 
 	// Use the layer manager to handle the write operation
 	// Pass the file name to the layer manager
-	_, _, err := globalLM.Write(f.name, dataCopy, uint64(req.Offset))
+	_, _, err := f.lm.Write(f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		Logger.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
@@ -341,7 +306,7 @@ func (f *File) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	Logger.Debug("Removing file", "name", f.name)
 
 	// Remove the file from the database
-	err := globalLM.metadata.DeleteFile(f.name)
+	err := f.lm.metadata.DeleteFile(f.name)
 	if err != nil {
 		Logger.Error("Failed to remove file from database", "name", f.name, "error", err)
 		return err

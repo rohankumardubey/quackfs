@@ -54,8 +54,27 @@ Differential Storage System
 
 	`)
 
-	// Initialize the filesystem
-	initFS()
+	host := getEnvOrDefault("POSTGRES_HOST", "localhost")
+	port := getEnvOrDefault("POSTGRES_PORT", "5432")
+	user := getEnvOrDefault("POSTGRES_USER", "postgres")
+	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
+	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
+
+	Logger.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
+
+	// Construct the connection string
+	conn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbname)
+
+	ms, err := NewMetadataStore(conn)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create metadata store: %v", err))
+	}
+
+	lm, err := NewLayerManager(ms)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create layer manager: %v", err))
+	}
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint)
@@ -65,11 +84,18 @@ Differential Storage System
 	defer c.Close()
 
 	Logger.Info("FUSE filesystem mounted at", *mountpoint)
-	Logger.Info("Press 'c' to trigger a checkpoint")
 	Logger.Info("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
 
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
-	if err := fs.Serve(c, FS{}); err != nil {
+	if err := fs.Serve(c, NewFS(lm)); err != nil {
 		Logger.Fatal("Failed to serve FUSE FS", "error", err)
 	}
+}
+
+// getEnvOrDefault returns the environment variable value or a default if not set
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
 }

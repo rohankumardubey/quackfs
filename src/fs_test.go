@@ -119,7 +119,8 @@ func TestFuseFileRemoval(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "Error should indicate file does not exist")
 
 	// Verify the file was removed from the database
-	fileID, err := globalLM.metadata.GetFileIDByName(testFileName)
+	metadata, err := NewMetadataStore(GetTestConnectionString(t))
+	fileID, err := metadata.GetFileIDByName(testFileName)
 	require.NoError(t, err, "Error checking file ID")
 	require.Equal(t, 0, fileID, "File ID should be 0 (not found) after removal")
 

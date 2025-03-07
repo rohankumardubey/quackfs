@@ -98,6 +98,8 @@ func TestLayerManagerPersistence(t *testing.T) {
 }
 
 func TestFuseScenario(t *testing.T) {
+	lm, cleanup := SetupLayerManager(t)
+	defer cleanup()
 	// Create and mount the FUSE filesystem
 	mountDir, cleanup, errChan := SetupFuseMount(t)
 	defer cleanup()
@@ -124,7 +126,7 @@ func TestFuseScenario(t *testing.T) {
 
 	// Ensure the data was written correctly by reading directly from layer manager
 	expected1 := []byte(firstWrite)
-	got, err := globalLM.GetDataRange(filename, 0, uint64(len(expected1)))
+	got, err := lm.GetDataRange(filename, 0, uint64(len(expected1)))
 	require.NoError(t, err, "Error getting content after first write")
 	assert.Equal(t, expected1, got, "After first write, content doesn't match expected")
 
@@ -136,7 +138,7 @@ func TestFuseScenario(t *testing.T) {
 
 	// Get the combined content after both writes
 	expectedLen := len(firstWrite) + len(secondWrite)
-	got, err = globalLM.GetDataRange(filename, 0, uint64(expectedLen))
+	got, err = lm.GetDataRange(filename, 0, uint64(expectedLen))
 	require.NoError(t, err, "Error getting content after second write")
 
 	// The expected content is the concatenation of both writes
@@ -151,7 +153,7 @@ func TestFuseScenario(t *testing.T) {
 
 	// Get the combined content after all three writes
 	expectedFinalLen := len(firstWrite) + len(secondWrite) + len(thirdWrite)
-	got, err = globalLM.GetDataRange(filename, 0, uint64(expectedFinalLen))
+	got, err = lm.GetDataRange(filename, 0, uint64(expectedFinalLen))
 	require.NoError(t, err, "Error getting content after third write")
 
 	// The expected content is the concatenation of all three writes

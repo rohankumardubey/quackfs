@@ -1,5 +1,5 @@
 ---
-description: Use `make test`
+description: After making changes or checking tests use `make test`
 globs: 
 alwaysApply: false
 ---
