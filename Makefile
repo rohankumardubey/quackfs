@@ -1,14 +1,14 @@
-.PHONY: build test clean run db-init db-clean
+.PHONY: build test clean run db.init db.drop db.test.init db.test.drop
 
 .DEFAULT_GOAL := run
 
 build:
 	go build -o difffs ./src
 
-test: db.test.clean
-	go test -race -shuffle=on -v ./src $(TEST)
+test: db.test.drop db.test.init
+	go test -timeout 5s -p 1 -race -shuffle=on -v ./src/storage $(TEST)
 
-clean:
+clean: db.drop
 	fusermount3 -u /tmp/fuse || true
 	rm -f difffs
 	rm -rf /tmp/fuse
@@ -20,6 +20,7 @@ db.init:
 	@if ! psql -U postgres -lqt | cut -d \| -f 1 | grep -qw difffs; then \
 		echo "Creating difffs database..."; \
 		psql -U postgres -c "CREATE DATABASE difffs;"; \
+		psql -U postgres -d difffs -f schema.sql; \
 		psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE difffs TO postgres;"; \
 	else \
 		echo "Database difffs already exists"; \
@@ -32,23 +33,20 @@ db.test.init:
 	@if ! psql -U postgres -lqt | cut -d \| -f 1 | grep -qw difffs_test; then \
 		echo "Creating difffs_test database..."; \
 		psql -U postgres -c "CREATE DATABASE difffs_test;"; \
+		psql -U postgres -d difffs_test -f schema.sql; \
 		psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE difffs_test TO postgres;"; \
 	else \
 		echo "Database difffs_test already exists"; \
 	fi
 
-db.clean:
+db.drop:
 	@echo "Cleaning PostgreSQL database"
 	@psql -U postgres -c "DROP DATABASE IF EXISTS difffs;" || true
-	@psql -U postgres -c "CREATE DATABASE difffs;"
-	@psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE difffs TO postgres;"
 
-db.test.clean:
+db.test.drop:
 	@echo "Cleaning PostgreSQL test database"
 	@psql -U postgres -c "DROP DATABASE IF EXISTS difffs_test;" || true
-	@psql -U postgres -c "CREATE DATABASE difffs_test;"
-	@psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE difffs_test TO postgres;"
 
-run: clean build db-init
+run: clean build db.init
 	mkdir -p /tmp/fuse
 	./difffs -mount /tmp/fuse

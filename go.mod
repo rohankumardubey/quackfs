@@ -1,4 +1,4 @@
-module github.com/vinimdocarmo/diff
+module github.com/vinimdocarmo/difffs
 
 go 1.23.4
 

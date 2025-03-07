@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +10,10 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	log "github.com/charmbracelet/log"
+	_ "github.com/lib/pq"
+	"github.com/vinimdocarmo/difffs/src/fsx"
+	"github.com/vinimdocarmo/difffs/src/logger"
+	"github.com/vinimdocarmo/difffs/src/storage"
 )
 
 // Initialize our global logger
@@ -16,7 +21,7 @@ func initLogger() {
 	// Set log level from environment variable
 	logLevel := getEnvOrDefault("LOG_LEVEL", "info")
 
-	Logger = log.NewWithOptions(os.Stderr, log.Options{
+	logger.Log = log.NewWithOptions(os.Stderr, log.Options{
 		ReportCaller:    logLevel == "debug",
 		ReportTimestamp: true,
 		TimeFormat:      time.Kitchen,
@@ -25,7 +30,7 @@ func initLogger() {
 	if logLevel != "" {
 		level, err := log.ParseLevel(logLevel)
 		if err == nil {
-			Logger.SetLevel(level)
+			logger.Log.SetLevel(level)
 		}
 	}
 }
@@ -38,7 +43,7 @@ func main() {
 	flag.Parse()
 
 	if *mountpoint == "" {
-		Logger.Info("Usage: ./difffs -mount <mountpoint>")
+		logger.Log.Info("Usage: ./difffs -mount <mountpoint>")
 		os.Exit(1)
 	}
 
@@ -60,35 +65,36 @@ Differential Storage System
 	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
 	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
 
-	Logger.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
+	logger.Log.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
 
 	// Construct the connection string
 	conn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
 
-	ms, err := NewMetadataStore(conn)
+	db, err := sql.Open("postgres", conn)
 	if err != nil {
-		panic(fmt.Sprintf("failed to create metadata store: %v", err))
+		logger.Log.Fatal("Failed to create database connection", "error", err)
 	}
+	defer db.Close()
 
-	lm, err := NewLayerManager(ms)
+	sm, err := storage.NewManager(db)
 	if err != nil {
-		panic(fmt.Sprintf("failed to create layer manager: %v", err))
+		logger.Log.Fatal("Failed to create storage manager", "error", err)
 	}
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint)
 	if err != nil {
-		Logger.Fatal("Failed to mount FUSE", "error", err)
+		logger.Log.Fatal("Failed to mount FUSE", "error", err)
 	}
 	defer c.Close()
 
-	Logger.Info("FUSE filesystem mounted at", *mountpoint)
-	Logger.Info("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
+	logger.Log.Info("FUSE filesystem mounted at", *mountpoint)
+	logger.Log.Info("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
 
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
-	if err := fs.Serve(c, NewFS(lm)); err != nil {
-		Logger.Fatal("Failed to serve FUSE FS", "error", err)
+	if err := fs.Serve(c, fsx.NewFS(sm)); err != nil {
+		logger.Log.Fatal("Failed to serve FUSE FS", "error", err)
 	}
 }
 
