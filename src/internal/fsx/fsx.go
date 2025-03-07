@@ -8,8 +8,8 @@ import (
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
-	"github.com/vinimdocarmo/difffs/src/logger"
-	"github.com/vinimdocarmo/difffs/src/storage"
+	"github.com/vinimdocarmo/difffs/src/internal/logger"
+	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
 // FS implements the FUSE filesystem.

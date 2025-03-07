@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vinimdocarmo/difffs/src/logger"
+	"github.com/vinimdocarmo/difffs/src/internal/logger"
 )
 
 type Layer struct {

@@ -7,7 +7,7 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"github.com/vinimdocarmo/difffs/src/storage"
+	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
 func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {

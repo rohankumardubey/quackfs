@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vinimdocarmo/difffs/src/difffstest"
+	"github.com/vinimdocarmo/difffs/src/internal/difffstest"
 )
 
 func TestWriteReadActiveLayer(t *testing.T) {

@@ -3,14 +3,14 @@
 .DEFAULT_GOAL := run
 
 build:
-	go build -o difffs ./src
+	go build -o difffs.exe ./src/cmd/difffs
 
 test: db.test.drop db.test.init
-	go test -timeout 5s -p 1 -race -shuffle=on -v ./src/storage $(TEST)
+	go test -timeout 5s -p 1 -race -shuffle=on -v ./src/... $(TEST)
 
 clean: db.drop
 	fusermount3 -u /tmp/fuse || true
-	rm -f difffs
+	rm -f difffs.exe
 	rm -rf /tmp/fuse
 
 db.init:
@@ -49,4 +49,4 @@ db.test.drop:
 
 run: clean build db.init
 	mkdir -p /tmp/fuse
-	./difffs -mount /tmp/fuse
+	./difffs.exe -mount /tmp/fuse

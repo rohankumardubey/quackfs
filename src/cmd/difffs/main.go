@@ -11,9 +11,9 @@ import (
 	"bazil.org/fuse/fs"
 	log "github.com/charmbracelet/log"
 	_ "github.com/lib/pq"
-	"github.com/vinimdocarmo/difffs/src/fsx"
-	"github.com/vinimdocarmo/difffs/src/logger"
-	"github.com/vinimdocarmo/difffs/src/storage"
+	"github.com/vinimdocarmo/difffs/src/internal/fsx"
+	"github.com/vinimdocarmo/difffs/src/internal/logger"
+	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
 // Initialize our global logger

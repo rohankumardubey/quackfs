@@ -10,8 +10,8 @@ import (
 	"bazil.org/fuse/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vinimdocarmo/difffs/src/difffstest"
-	"github.com/vinimdocarmo/difffs/src/storage"
+	"github.com/vinimdocarmo/difffs/src/internal/difffstest"
+	"github.com/vinimdocarmo/difffs/src/internal/storage"
 )
 
 func TestFuseReadWrite(t *testing.T) {
