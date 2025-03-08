@@ -12,13 +12,13 @@ import (
 )
 
 type Layer struct {
-	ID      int
-	FileID  int
+	ID      int64
+	FileID  int64
 	Sealed  bool
 	entries map[uint64][]byte
 }
 
-func newLayer(fileID int) *Layer {
+func newLayer(fileID int64) *Layer {
 	return &Layer{
 		FileID:  fileID,
 		Sealed:  false,
@@ -67,7 +67,7 @@ func NewManager(db *sql.DB, log *log.Logger) (*Manager, error) {
 
 	// If no layers exist, create an initial layer with a default fileID.
 	if len(layers) == 0 {
-		initialFileID := 0 // Use a default fileID for the initial layer
+		initialFileID := int64(0) // Use a default fileID for the initial layer
 		if err := sm.createInitialLayer(initialFileID); err != nil {
 			return nil, err
 		}
@@ -78,7 +78,7 @@ func NewManager(db *sql.DB, log *log.Logger) (*Manager, error) {
 }
 
 // createInitialLayer creates the very first layer when no layers exist
-func (sm *Manager) createInitialLayer(fileID int) error {
+func (sm *Manager) createInitialLayer(fileID int64) error {
 	sm.log.Debug("No existing layers found, creating initial layer")
 	initial := newLayer(fileID)
 	id, err := sm.recordNewLayer(initial)
@@ -158,7 +158,7 @@ func (sm *Manager) SealActiveLayer(fileName string) error {
 
 // Write writes data to the active layer at the specified global offset.
 // It returns the active layer's ID and the offset where the data was written.
-func (sm *Manager) Write(fileName string, data []byte, offset uint64) (layerID int, writtenOffset uint64, err error) {
+func (sm *Manager) Write(fileName string, data []byte, offset uint64) (layerID int64, writtenOffset uint64, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -254,7 +254,7 @@ func (sm *Manager) calculateRanges(layer *Layer, offset uint64, dataSize int) ([
 	return layerRange, fileRange, nil
 }
 
-func (sm *Manager) FileSize(id int) (uint64, error) {
+func (sm *Manager) FileSize(id int64) (uint64, error) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
@@ -298,7 +298,7 @@ func (sm *Manager) GetDataRange(fileName string, offset uint64, size uint64) ([]
 }
 
 // GetFullContentForFile returns the full content of a specific file by ID
-func (sm *Manager) GetFullContentForFile(id int) []byte {
+func (sm *Manager) GetFullContentForFile(id int64) []byte {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
@@ -322,7 +322,7 @@ func (sm *Manager) GetFullContentForFile(id int) []byte {
 	var maxSize uint64 = 0
 
 	for _, layer := range layers {
-		if entries, ok := entriesMap[layer.ID]; ok {
+		if entries, ok := entriesMap[int64(layer.ID)]; ok {
 			for _, entry := range entries {
 				endOffset := entry.Offset + uint64(len(entry.Data))
 				if endOffset > maxSize {
@@ -337,7 +337,7 @@ func (sm *Manager) GetFullContentForFile(id int) []byte {
 
 	// Merge layers in order (later layers override earlier ones)
 	for _, layer := range layers {
-		if entries, ok := entriesMap[layer.ID]; ok {
+		if entries, ok := entriesMap[int64(layer.ID)]; ok {
 			// Entries are already sorted by offset from the database
 			for _, entry := range entries {
 				if entry.Offset+uint64(len(entry.Data)) <= uint64(len(buf)) {
@@ -358,7 +358,7 @@ func (sm *Manager) GetFullContentForFile(id int) []byte {
 	return buf
 }
 
-func (sm *Manager) GetLayerBase(layerID int) (uint64, error) {
+func (sm *Manager) GetLayerBase(layerID int64) (uint64, error) {
 	query := `
 		SELECT lower(file_range)::bigint
 		FROM entries
@@ -391,7 +391,7 @@ type LayerMetadata struct {
 
 // EntryRecord holds data for a write entry.
 type EntryRecord struct {
-	LayerID    int
+	LayerID    int64
 	Offset     uint64
 	Data       []byte
 	LayerRange [2]uint64 // Range within a layer as an array of two integers
@@ -399,11 +399,11 @@ type EntryRecord struct {
 }
 
 // InsertFile inserts a new file into the files table and returns its ID.
-func (sm *Manager) InsertFile(name string) (int, error) {
+func (sm *Manager) InsertFile(name string) (int64, error) {
 	sm.log.Debug("Inserting new file into metadata store", "name", name)
 
 	query := `INSERT INTO files (name) VALUES ($1) RETURNING id;`
-	var fileID int
+	var fileID int64
 	err := sm.db.QueryRow(query, name).Scan(&fileID)
 	if err != nil {
 		sm.log.Error("Failed to insert new file", "name", name, "error", err)
@@ -423,9 +423,9 @@ func (sm *Manager) InsertFile(name string) (int, error) {
 }
 
 // GetFileIDByName retrieves the file ID for a given file name.
-func (sm *Manager) GetFileIDByName(name string) (int, error) {
+func (sm *Manager) GetFileIDByName(name string) (int64, error) {
 	query := `SELECT id FROM files WHERE name = $1;`
-	var fileID int
+	var fileID int64
 	err := sm.db.QueryRow(query, name).Scan(&fileID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -440,11 +440,11 @@ func (sm *Manager) GetFileIDByName(name string) (int, error) {
 }
 
 // recordNewLayer inserts a new layer record.
-func (sm *Manager) recordNewLayer(layer *Layer) (int, error) {
+func (sm *Manager) recordNewLayer(layer *Layer) (int64, error) {
 	sm.log.Debug("Recording new layer in metadata store", "layerID", layer.ID)
 
 	query := `INSERT INTO layers (file_id, sealed) VALUES ($1, 0) RETURNING id;`
-	var newID int
+	var newID int64
 	err := sm.db.QueryRow(query, layer.FileID).Scan(&newID)
 	if err != nil {
 		sm.log.Error("Failed to record new layer", "layerID", layer.ID, "error", err)
@@ -458,7 +458,7 @@ func (sm *Manager) recordNewLayer(layer *Layer) (int, error) {
 }
 
 // sealLayer marks the layer with the given id as sealed.
-func (sm *Manager) sealLayer(layerID int) error {
+func (sm *Manager) sealLayer(layerID int64) error {
 	sm.log.Debug("Sealing layer in metadata store", "layerID", layerID)
 
 	query := `UPDATE layers SET sealed = 1 WHERE id = $1;`
@@ -475,7 +475,7 @@ func (sm *Manager) sealLayer(layerID int) error {
 
 // recordEntry inserts a new entry record.
 // Now includes layer_range and file_range parameters
-func (sm *Manager) recordEntry(layerID int, offset uint64, data []byte, layerRange [2]uint64, fileRange [2]uint64) error {
+func (sm *Manager) recordEntry(layerID int64, offset uint64, data []byte, layerRange [2]uint64, fileRange [2]uint64) error {
 	sm.log.Debug("Recording entry in metadata store",
 		"layerID", layerID,
 		"offset", offset,
@@ -516,7 +516,7 @@ func (sm *Manager) loadLayers() ([]*Layer, error) {
 	layerCount := 0
 
 	for rows.Next() {
-		var id, fileID, sealedInt int
+		var id, fileID, sealedInt int64
 		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
 			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err
@@ -536,7 +536,7 @@ func (sm *Manager) loadLayers() ([]*Layer, error) {
 }
 
 // loadEntries loads all entry records from the database and groups them by layer_id.
-func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
+func (sm *Manager) loadEntries() (map[int64][]EntryRecord, error) {
 	sm.log.Debug("Loading entries from metadata store")
 
 	query := `SELECT layer_id, offset_value, data, layer_range, file_range FROM entries ORDER BY layer_id, offset_value ASC;`
@@ -547,12 +547,12 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 	}
 	defer rows.Close()
 
-	result := make(map[int][]EntryRecord)
+	result := make(map[int64][]EntryRecord)
 	entriesCount := 0
 	totalDataSize := 0
 
 	for rows.Next() {
-		var layerID int
+		var layerID int64
 		var offset uint64
 		var data []byte
 		var layerRangeStr, fileRangeStr sql.NullString
@@ -566,12 +566,12 @@ func (sm *Manager) loadEntries() (map[int][]EntryRecord, error) {
 		if layerRangeStr.Valid {
 			parts := strings.Split(strings.Trim(layerRangeStr.String, "[)"), ",")
 			if len(parts) == 2 {
-				start, err := strconv.ParseUint(parts[0], 10, 8)
+				start, err := strconv.ParseUint(parts[0], 10, 64)
 				if err != nil {
 					sm.log.Error("Error parsing layer range start", "value", parts[0], "error", err)
 					return nil, err
 				}
-				end, err := strconv.ParseUint(parts[1], 10, 8)
+				end, err := strconv.ParseUint(parts[1], 10, 64)
 				if err != nil {
 					sm.log.Error("Error parsing layer range end", "value", parts[1], "error", err)
 					return nil, err
@@ -651,18 +651,18 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 	}
 
 	// Create the layer
-	var fileID int
+	var fileID int64
 	rows.Scan(&fileID)
 	layer := newLayer(fileID)
 
 	// Track statistics
-	var layerID int
+	var layerID int64
 	entriesCount := 0
 	totalDataSize := 0
 
 	// Process all rows
 	for {
-		var id, fileID int
+		var id, fileID int64
 		var offset sql.NullInt64
 		var data []byte
 		var layerRangeStr, fileRangeStr sql.NullString
@@ -725,7 +725,7 @@ func (sm *Manager) Close() error {
 }
 
 // calculateVirtualFileSize calculates the total byte size of the virtual file from all layers and their entries, respecting layer creation order and handling overlapping file ranges.
-func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
+func (sm *Manager) calculateVirtualFileSize(fileID int64) (uint64, error) {
 	sm.log.Debug("Calculating virtual file size from metadata store", "fileID", fileID)
 
 	query := `
@@ -800,7 +800,7 @@ func (sm *Manager) calculateVirtualFileSize(fileID int) (uint64, error) {
 }
 
 // LoadLayersByFileID loads all layers associated with a specific file ID from the database.
-func (sm *Manager) LoadLayersByFileID(fileID int) ([]*Layer, error) {
+func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*Layer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
 	query := `SELECT id, file_id, sealed FROM layers WHERE file_id = $1 ORDER BY id ASC;`
@@ -815,7 +815,7 @@ func (sm *Manager) LoadLayersByFileID(fileID int) ([]*Layer, error) {
 	layerCount := 0
 
 	for rows.Next() {
-		var id, sealedInt int
+		var id, sealedInt int64
 		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
 			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err

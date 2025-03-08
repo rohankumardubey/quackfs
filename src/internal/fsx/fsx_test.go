@@ -93,7 +93,7 @@ func TestFuseFileRemoval(t *testing.T) {
 	// Verify the file was removed from the database
 	fileID, err := sm.GetFileIDByName(testFileName)
 	require.NoError(t, err, "Error checking file ID")
-	require.Equal(t, 0, fileID, "File ID should be 0 (not found) after removal")
+	require.Equal(t, int64(0), fileID, "File ID should be 0 (not found) after removal")
 
 	// Check for any errors from the FUSE server
 	select {
