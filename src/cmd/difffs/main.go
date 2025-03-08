@@ -62,14 +62,14 @@ Differential Storage System
 	}
 
 	// Mount the FUSE filesystem.
-	c, err := fuse.Mount(*mountpoint)
+	c, err := fuse.Mount(*mountpoint, fuse.FSName("difffs"))
 	if err != nil {
 		log.Fatal("Failed to mount FUSE", "error", err)
 	}
 	defer c.Close()
 
-	log.Info("FUSE filesystem mounted at", *mountpoint)
-	log.Info("Using PostgreSQL for persistence: host=", os.Getenv("POSTGRES_HOST"))
+	log.Info("FUSE filesystem mounted", "mountpoint", *mountpoint)
+	log.Info("Using PostgreSQL for persistence", "host", os.Getenv("POSTGRES_HOST"))
 
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
 	if err := fs.Serve(c, fsx.NewFS(sm, log)); err != nil {
