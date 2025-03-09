@@ -1,7 +1,6 @@
 package storage_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -711,13 +710,13 @@ func TestVersionedLayers(t *testing.T) {
 
 	// Check layer versions based on the actual values
 	// First layer has version v1
-	assert.Equal(t, versionID1, layers[0].VersionID, "First layer should have version v1")
+	assert.Equal(t, versionTag1, layers[0].Tag, "First layer should have version v1")
 
 	// Second layer has version v2
-	assert.Equal(t, versionID2, layers[1].VersionID, "Second layer should have version v2")
+	assert.Equal(t, versionTag2, layers[1].Tag, "Second layer should have version v2")
 
 	// Third layer has no version (it's the active layer)
-	assert.Equal(t, int64(0), layers[2].VersionID, "Third layer should have no version (active layer)")
+	assert.Equal(t, "", layers[2].Tag, "Third layer should have no version (active layer)")
 
 	// Verify that we can retrieve version tags by ID
 	tag1, err := sm.GetVersionTagByID(versionID1)
@@ -734,103 +733,53 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 	defer cleanup()
 
 	// Create a test file
-	fileName := "testfile_versioned_read"
-	_, err := sm.InsertFile(fileName)
-	if err != nil {
-		t.Fatalf("Failed to insert file: %v", err)
-	}
+	filename := "testfile_versioned_read"
+	_, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
 
 	// Write initial content
-	initialContent := []byte("Initial content")
-	_, _, err = sm.WriteFile(fileName, initialContent, 0)
-	if err != nil {
-		t.Fatalf("Failed to write initial content: %v", err)
-	}
+	initialContent := []byte("***************")
+	_, _, err = sm.WriteFile(filename, initialContent, 0)
+	require.NoError(t, err, "Failed to write initial content")
 
 	// Create version v1
 	v1Tag := "v1"
-	err = sm.Checkpoint(fileName, v1Tag)
-	if err != nil {
-		t.Fatalf("Failed to checkpoint with version v1: %v", err)
-	}
+	err = sm.Checkpoint(filename, v1Tag)
+	require.NoError(t, err, "Failed to checkpoint with version v1")
 
 	// Write more content
-	updatedContent := []byte("Updated content")
-	_, _, err = sm.WriteFile(fileName, updatedContent, 0)
-	if err != nil {
-		t.Fatalf("Failed to write updated content: %v", err)
-	}
+	updatedContent := []byte("---------------")
+	_, _, err = sm.WriteFile(filename, updatedContent, 0)
+	require.NoError(t, err, "Failed to write updated content")
 
 	// Create version v2
 	v2Tag := "v2"
-	err = sm.Checkpoint(fileName, v2Tag)
-	if err != nil {
-		t.Fatalf("Failed to checkpoint with version v2: %v", err)
-	}
+	err = sm.Checkpoint(filename, v2Tag)
+	require.NoError(t, err, "Failed to checkpoint with version v2")
 
 	// Write final content
-	finalContent := []byte("Final content")
-	_, _, err = sm.WriteFile(fileName, finalContent, 0)
-	if err != nil {
-		t.Fatalf("Failed to write final content: %v", err)
-	}
-
-	// Get version IDs to verify test setup
-	v1ID, err := sm.GetVersionIDByTag(v1Tag)
-	require.NoError(t, err, "Failed to get version ID for tag v1")
-	require.NotEqual(t, int64(0), v1ID, "Version ID for v1 should not be 0")
-
-	v2ID, err := sm.GetVersionIDByTag(v2Tag)
-	require.NoError(t, err, "Failed to get version ID for tag v2")
-	require.NotEqual(t, int64(0), v2ID, "Version ID for v2 should not be 0")
-
-	// Load all layers to verify test setup
-	fileID, err := sm.GetFileIDByName(fileName)
-	require.NoError(t, err, "Failed to get file ID")
-	layers, err := sm.LoadLayersByFileID(fileID)
-	require.NoError(t, err, "Failed to load layers")
-
-	// Log layer information for debugging
-	for i, layer := range layers {
-		t.Logf("Layer %d: ID=%d, VersionID=%d", i, layer.ID, layer.VersionID)
-	}
+	finalContent := []byte("@@@@@@@@@@@@@@@")
+	_, _, err = sm.WriteFile(filename, finalContent, 0)
+	require.NoError(t, err, "Failed to write final content")
 
 	// Test reading with version v1
-	v1Content, err := sm.ReadFile(fileName, 0, 100, storage.WithVersionTag(v1Tag))
-	if err != nil {
-		t.Fatalf("Failed to read content with version v1: %v", err)
-	}
-	if string(v1Content) != string(initialContent) {
-		t.Errorf("Expected content for version v1 to be %q, got %q", initialContent, v1Content)
-	}
+	v1Content, err := sm.ReadFile(filename, 0, 100, storage.WithVersionTag(v1Tag))
+	require.NoError(t, err, "Failed to read content with version v1")
+	assert.Equal(t, string(v1Content), string(initialContent), "Expected content for version v1 to be %q, got %q", initialContent, v1Content)
 
 	// Test reading with version v2
-	v2Content, err := sm.ReadFile(fileName, 0, 100, storage.WithVersionTag(v2Tag))
-	if err != nil {
-		t.Fatalf("Failed to read content with version v2: %v", err)
-	}
-	if string(v2Content) != string(updatedContent) {
-		t.Errorf("Expected content for version v2 to be %q, got %q", updatedContent, v2Content)
-	}
+	v2Content, err := sm.ReadFile(filename, 0, 100, storage.WithVersionTag(v2Tag))
+	require.NoError(t, err, "Failed to read content with version v2")
+	assert.Equal(t, string(v2Content), string(updatedContent), "Expected content for version v2 to be %q, got %q", updatedContent, v2Content)
 
 	// Test reading latest content (no version specified)
-	latestContent, err := sm.ReadFile(fileName, 0, 100)
-	if err != nil {
-		t.Fatalf("Failed to read latest content: %v", err)
-	}
+	latestContent, err := sm.ReadFile(filename, 0, 100)
+	require.NoError(t, err, "Failed to read latest content")
 
-	// Get the actual content for debugging
-	t.Logf("Latest content: %q", string(latestContent))
-
-	// The latest content should be the final content, but there might be some differences
-	// due to how the content is stored and retrieved. Let's check if it contains the expected content.
-	if !strings.Contains(string(latestContent), string(finalContent)) {
-		t.Errorf("Expected latest content to contain %q, got %q", finalContent, latestContent)
-	}
+	assert.Equal(t, string(latestContent), string(finalContent), "Expected latest content to be %q, got %q", finalContent, latestContent)
 
 	// Test reading with non-existent version
-	_, err = sm.ReadFile(fileName, 0, 100, storage.WithVersionTag("non_existent_version"))
-	if err == nil {
-		t.Error("Expected error when reading with non-existent version, got nil")
-	}
+	_, err = sm.ReadFile(filename, 0, 100, storage.WithVersionTag("non_existent_version"))
+	assert.Error(t, err, "Expected error when reading with non-existent version")
+	assert.Contains(t, err.Error(), "version tag not found", "Error should indicate version tag not found")
 }

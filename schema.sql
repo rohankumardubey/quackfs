@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS files (
 -- Create versions table
 CREATE TABLE IF NOT EXISTS versions (
     id SERIAL PRIMARY KEY,
-    tag TEXT UNIQUE NOT NULL
+    tag TEXT NOT NULL
 );
 
 -- Create layers table
@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS layers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     sealed INTEGER DEFAULT 0,
     version_id INTEGER DEFAULT NULL REFERENCES versions(id),
-    CHECK ((sealed = 0 AND version_id IS NULL) OR (sealed = 1 AND version_id IS NOT NULL))
+    CHECK ((sealed = 0 AND version_id IS NULL) OR (sealed = 1 AND version_id IS NOT NULL)),
+    UNIQUE (file_id, version_id)
 );
 
 -- Create entries table with proper index creation and range columns

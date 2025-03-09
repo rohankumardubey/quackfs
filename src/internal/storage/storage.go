@@ -16,6 +16,7 @@ type Layer struct {
 	FileID    int64
 	Sealed    bool
 	VersionID int64
+	Tag       string
 	entries   map[uint64][]byte
 }
 
@@ -163,7 +164,6 @@ func (sm *Manager) calculateRanges(layer *Layer, offset uint64, dataSize int) ([
 		layerStart = offset - baseOffset
 	} else {
 		layerStart = 0
-		sm.log.Error("Write offset is before layer base", "offset", offset, "layerBase", baseOffset, "layerID", layer.ID)
 	}
 	layerEnd := layerStart + dataLength
 	layerRange := [2]uint64{layerStart, layerEnd}
@@ -243,6 +243,20 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 
 	var layers []*Layer
 
+	// check if there's a layer for this file with the given version tag
+	if hasVersion {
+		exists := false
+		err = sm.db.QueryRow("SELECT EXISTS(SELECT 1 FROM layers inner join versions on versions.id = layers.version_id WHERE layers.file_id = $1 and versions.tag = $2)", id, options.version).Scan(&exists)
+		if err != nil {
+			sm.log.Error("failed to check if layer exists", "id", id, "version", options.version, "error", err)
+			return nil, fmt.Errorf("failed to check if layer exists: %w", err)
+		}
+		if !exists {
+			sm.log.Error("version tag not found", "version", options.version, "filename", filename)
+			return []byte{}, fmt.Errorf("version tag not found")
+		}
+	}
+
 	// Load layers for this specific file
 	allLayers, err := sm.LoadLayersByFileID(id)
 	if err != nil {
@@ -255,30 +269,12 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 
 	// If version tag is specified, filter layers by version
 	if hasVersion {
-		// Get version ID from tag
-		versionID, err := sm.GetVersionIDByTag(options.version)
-		if err != nil {
-			sm.log.Error("Failed to get version ID", "versionTag", options.version, "error", err)
-			return nil, fmt.Errorf("failed to get version ID: %w", err)
-		}
-
-		if versionID == 0 {
-			return nil, fmt.Errorf("version tag '%s' not found", options.version)
-		}
-
 		// Filter layers up to the specified version
 		for _, layer := range allLayers {
-			// Include layers with version ID <= requested version ID
-			// Note: We're not including layers with VersionID == 0 (unsealed layers)
-			// as they are created after the version we're interested in
-			if layer.VersionID > 0 && layer.VersionID <= versionID {
-				layers = append(layers, layer)
+			layers = append(layers, layer)
+			if layer.Tag == options.version {
+				break
 			}
-		}
-
-		if len(layers) == 0 {
-			sm.log.Warn("No layers found for file up to specified version", "fileID", id, "versionTag", options.version)
-			return []byte{}, nil
 		}
 	} else {
 		// Use all layers when no version is specified
@@ -348,7 +344,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 			"offset", offset,
 			"end", end,
 			"returnedSize", end-offset,
-			"versionTag", options.version)
+			"version", options.version)
 	} else {
 		sm.log.Debug("Returning data range",
 			"offset", offset,
@@ -459,51 +455,40 @@ func (sm *Manager) recordNewLayer(layer *Layer) (int64, error) {
 }
 
 // sealLayer marks the layer with the given id as sealed.
-// If versionTag is not empty, it associates the layer with the version.
-func (sm *Manager) sealLayer(layerID int64, versionTag string) error {
-	sm.log.Debug("Sealing layer in metadata store", "layerID", layerID, "versionTag", versionTag)
-
-	var versionID int64 = 0
-	var err error
-
-	// If a version tag is provided, get or create the version
-	if versionTag != "" {
-		// Check if the version already exists
-		versionID, err = sm.GetVersionIDByTag(versionTag)
-		if err != nil {
-			sm.log.Error("Failed to get version ID", "tag", versionTag, "error", err)
-			return err
-		}
-
-		// If the version doesn't exist, create it
-		if versionID == 0 {
-			versionID, err = sm.InsertVersion(versionTag)
-			if err != nil {
-				sm.log.Error("Failed to insert version", "tag", versionTag, "error", err)
-				return err
-			}
-		}
+// If version is not empty, it associates the layer with the version.
+func (sm *Manager) sealLayer(layerID int64, version string) error {
+	if version == "" {
+		panic("unreachable")
 	}
 
-	// Update the layer with the sealed flag and version ID if provided
+	sm.log.Debug("Sealing layer in metadata store", "layerID", layerID, "version", version)
+
+	versionID, err := sm.InsertVersion(version)
+	if err != nil {
+		sm.log.Error("Failed to insert version", "tag", version, "error", err)
+		return err
+	}
+
 	var query string
 	var result sql.Result
 
-	if versionID > 0 {
-		query = `UPDATE layers SET sealed = 1, version_id = $2 WHERE id = $1;`
-		result, err = sm.db.Exec(query, layerID, versionID)
-	} else {
-		query = `UPDATE layers SET sealed = 1 WHERE id = $1;`
-		result, err = sm.db.Exec(query, layerID)
-	}
-
+	query = `UPDATE layers SET sealed = 1, version_id = $1 WHERE id = $2;`
+	result, err = sm.db.Exec(query, versionID, layerID)
 	if err != nil {
 		sm.log.Error("Failed to seal layer", "layerID", layerID, "error", err)
 		return err
 	}
 
-	rowsAffected, _ := result.RowsAffected()
-	sm.log.Debug("Layer sealed successfully", "layerID", layerID, "rowsAffected", rowsAffected, "versionID", versionID)
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		sm.log.Error("Failed to get rows affected", "layerID", layerID, "error", err)
+		return err
+	}
+	if rowsAffected != 1 {
+		sm.log.Error("only one row should be affected", "layerID", layerID, "n", rowsAffected)
+		panic(fmt.Sprintf("failed to seal layer: %d rows affected", rowsAffected))
+	}
+
 	return nil
 }
 
@@ -849,7 +834,12 @@ func (sm *Manager) calculateVirtualFileSize(fileID int64) (uint64, error) {
 func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*Layer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
-	query := `SELECT id, file_id, sealed, version_id FROM layers WHERE file_id = $1 ORDER BY id ASC;`
+	query := `
+		SELECT layers.id, file_id, sealed, version_id, tag
+		FROM layers
+		LEFT JOIN versions ON layers.version_id = versions.id
+		WHERE file_id = $1 ORDER BY id ASC;
+	`
 	rows, err := sm.db.Query(query, fileID)
 	if err != nil {
 		sm.log.Error("Failed to query layers for file", "fileID", fileID, "error", err)
@@ -863,7 +853,8 @@ func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*Layer, error) {
 	for rows.Next() {
 		var id, sealedInt int64
 		var versionID sql.NullInt64
-		if err := rows.Scan(&id, &fileID, &sealedInt, &versionID); err != nil {
+		var tag sql.NullString
+		if err := rows.Scan(&id, &fileID, &sealedInt, &versionID, &tag); err != nil {
 			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err
 		}
@@ -875,10 +866,13 @@ func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*Layer, error) {
 		} else {
 			layer.VersionID = 0
 		}
+		if tag.Valid {
+			layer.Tag = tag.String
+		}
 		layers = append(layers, layer)
 
 		sealed := sealedInt != 0
-		sm.log.Debug("Loaded layer for file", "layerID", id, "sealed", sealed, "versionID", layer.VersionID)
+		sm.log.Debug("Loaded layer for file", "layerID", id, "sealed", sealed, "versionID", layer.VersionID, "tag", layer.Tag)
 		layerCount++
 	}
 
@@ -976,7 +970,7 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 	}
 
 	current := layers[len(layers)-1]
-	sm.log.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.entryCount(), "versionTag", version)
+	sm.log.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.entryCount(), "version", version)
 
 	if err := sm.sealLayer(current.ID, version); err != nil {
 		sm.log.Error("Failed to seal layer in metadata store", "layerID", current.ID, "error", err)
@@ -985,7 +979,6 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 
 	newLayer := newLayer(fileID)
 	id, err := sm.recordNewLayer(newLayer)
-
 	if err != nil {
 		sm.log.Error("Failed to record new layer", "error", err)
 		return fmt.Errorf("failed to record new layer: %w", err)

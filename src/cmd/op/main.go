@@ -172,7 +172,7 @@ func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	// Define command-line flags for checkpoint command
 	checkpointCmd := flag.NewFlagSet("checkpoint", flag.ExitOnError)
 	fileName := checkpointCmd.String("file", "", "Target file to checkpoint")
-	versionTag := checkpointCmd.String("version", "", "Version tag to associate with the sealed layer")
+	version := checkpointCmd.String("version", "", "Version tag to associate with the sealed layer")
 
 	// Parse the flags
 	checkpointCmd.Parse(os.Args[1:])
@@ -198,15 +198,15 @@ func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	}
 
 	// Checkpoint the file
-	err = sm.Checkpoint(*fileName, *versionTag)
+	err = sm.Checkpoint(*fileName, *version)
 	if err != nil {
 		log.Fatal("Failed to checkpoint file", "error", err)
 	}
 
 	// Log success message with version tag if provided
-	if *versionTag != "" {
-		log.Info("File checkpointed successfully", "fileName", *fileName, "version", *versionTag)
-		fmt.Printf("Successfully checkpointed file %s with version tag %s\n", *fileName, *versionTag)
+	if *version != "" {
+		log.Info("File checkpointed successfully", "fileName", *fileName, "version", *version)
+		fmt.Printf("Successfully checkpointed file %s with version tag %s\n", *fileName, *version)
 	} else {
 		log.Info("File checkpointed successfully", "fileName", *fileName)
 		fmt.Printf("Successfully checkpointed file %s\n", *fileName)
@@ -220,7 +220,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	fileName := readCmd.String("file", "", "Target file to read from")
 	offset := readCmd.Uint64("offset", 0, "Offset in the file to start reading from (default: 0)")
 	size := readCmd.Uint64("size", 0, "Number of bytes to read (default: entire file)")
-	versionTag := readCmd.String("version", "", "Version tag to read from (default: latest)")
+	version := readCmd.String("version", "", "Version tag to read from (default: latest)")
 
 	// Parse the flags
 	readCmd.Parse(os.Args[1:])
@@ -260,14 +260,14 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	var data []byte
 
 	// Read the data from the file, using version-specific method if a version tag is provided
-	if *versionTag != "" {
+	if *version != "" {
 		log.Info("Reading file content with version",
 			"fileName", *fileName,
 			"offset", *offset,
 			"size", readSize,
-			"versionTag", *versionTag)
+			"version", *version)
 
-		data, err = sm.ReadFile(*fileName, *offset, readSize, storage.WithVersionTag(*versionTag))
+		data, err = sm.ReadFile(*fileName, *offset, readSize, storage.WithVersionTag(*version))
 		if err != nil {
 			log.Fatal("Failed to read data with version", "error", err)
 		}
@@ -284,13 +284,13 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	}
 
 	// Print file information
-	if *versionTag != "" {
+	if *version != "" {
 		log.Info("Read file content with version",
 			"fileName", *fileName,
 			"offset", *offset,
 			"size", readSize,
 			"bytesRead", len(data),
-			"versionTag", *versionTag)
+			"version", *version)
 	} else {
 		log.Info("Read file content",
 			"fileName", *fileName,
