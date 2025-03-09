@@ -1,6 +1,7 @@
 package fsx
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	"github.com/charmbracelet/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vinimdocarmo/difffs/src/internal/difffstest"
@@ -161,4 +163,80 @@ func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error)
 	waitForMount(mountDir, t)
 
 	return mountDir, sm, cleanup, errChan
+}
+
+// TestWriteBeyondFileSize tests writing to an offset beyond the current file size
+func TestWriteBeyondFileSize(t *testing.T) {
+	// Set up test environment
+	sm, log, cleanup := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a test file
+	fileName := "test_write_beyond.txt"
+	initialContent := []byte("initial")
+	fileID, err := sm.InsertFile(fileName)
+	require.NoError(t, err)
+	require.NotZero(t, fileID)
+
+	// Write initial content at offset 0
+	_, _, err = sm.WriteFile(fileName, initialContent, 0)
+	require.NoError(t, err)
+
+	// Create a FUSE file instance
+	file := &File{
+		name:     fileName,
+		created:  time.Now(),
+		modified: time.Now(),
+		accessed: time.Now(),
+		fileSize: uint64(len(initialContent)),
+		sm:       sm,
+		log:      log,
+	}
+
+	// Write data at an offset beyond the current file size
+	beyondOffset := int64(20)
+	beyondData := []byte("beyond data")
+
+	// Create a write request
+	req := &fuse.WriteRequest{
+		Data:   beyondData,
+		Offset: beyondOffset,
+	}
+	resp := &fuse.WriteResponse{}
+
+	// Perform the write
+	err = file.Write(context.Background(), req, resp)
+	require.NoError(t, err)
+	require.Equal(t, len(beyondData), resp.Size)
+
+	// Read the entire file to verify the content
+	data, err := sm.ReadFile(fileName, 0, 100)
+	require.NoError(t, err)
+
+	// Verify the file size
+	expectedSize := uint64(beyondOffset) + uint64(len(beyondData))
+	require.Equal(t, expectedSize, uint64(len(data)))
+
+	// Verify initial content is preserved
+	require.Equal(t, initialContent, data[:len(initialContent)])
+
+	// Verify the gap is filled with zeroes
+	for i := len(initialContent); i < int(beyondOffset); i++ {
+		require.Equal(t, byte(0), data[i], "Expected zero at position %d", i)
+	}
+
+	// Verify the beyond data is written correctly
+	require.Equal(t, beyondData, data[beyondOffset:beyondOffset+int64(len(beyondData))])
+}
+
+// setupTestEnvironment creates a storage manager and logger for testing
+func setupTestEnvironment(t *testing.T) (*storage.Manager, *log.Logger, func()) {
+	sm, smCleanup := difffstest.SetupStorageManager(t)
+	log := logger.New(os.Stderr)
+
+	cleanup := func() {
+		smCleanup()
+	}
+
+	return sm, log, cleanup
 }

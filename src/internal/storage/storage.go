@@ -12,17 +12,19 @@ import (
 )
 
 type Layer struct {
-	ID      int64
-	FileID  int64
-	Sealed  bool
-	entries map[uint64][]byte
+	ID        int64
+	FileID    int64
+	Sealed    bool
+	VersionID int64
+	entries   map[uint64][]byte
 }
 
 func newLayer(fileID int64) *Layer {
 	return &Layer{
-		FileID:  fileID,
-		Sealed:  false,
-		entries: make(map[uint64][]byte),
+		FileID:    fileID,
+		Sealed:    false,
+		VersionID: 0,
+		entries:   make(map[uint64][]byte),
 	}
 }
 
@@ -48,8 +50,6 @@ type Manager struct {
 
 // NewManager creates (or reloads) a StorageManager using the provided metadataStore.
 func NewManager(db *sql.DB, log *log.Logger) (*Manager, error) {
-	log.Debug("Creating/reloading layer manager from metadata store")
-
 	managerLog := log.With()
 	managerLog.SetPrefix("💽 storage")
 
@@ -58,36 +58,8 @@ func NewManager(db *sql.DB, log *log.Logger) (*Manager, error) {
 		log: managerLog,
 	}
 
-	// Check if any layers exist, if not create an initial layer
-	layers, err := sm.loadLayers()
-	if err != nil {
-		sm.log.Error("Failed to check for existing layers", "error", err)
-		return nil, fmt.Errorf("failed to check for existing layers: %w", err)
-	}
-
-	// If no layers exist, create an initial layer with a default fileID.
-	if len(layers) == 0 {
-		initialFileID := int64(0) // Use a default fileID for the initial layer
-		if err := sm.createInitialLayer(initialFileID); err != nil {
-			return nil, err
-		}
-	}
-
 	sm.log.Debug("Layer manager initialization complete")
 	return sm, nil
-}
-
-// createInitialLayer creates the very first layer when no layers exist
-func (sm *Manager) createInitialLayer(fileID int64) error {
-	sm.log.Debug("No existing layers found, creating initial layer")
-	initial := newLayer(fileID)
-	id, err := sm.recordNewLayer(initial)
-	if err != nil {
-		sm.log.Error("Failed to record initial layer", "error", err)
-		return fmt.Errorf("failed to record initial layer: %w", err)
-	}
-	sm.log.Debug("Initial layer created and recorded", "layerID", id)
-	return nil
 }
 
 // ActiveLayer returns the current active (last) layer.
@@ -111,67 +83,22 @@ func (sm *Manager) ActiveLayer() *Layer {
 	return active
 }
 
-// SealActiveLayer seals the current active layer and creates a new active layer.
-// It updates the metadata store accordingly.
-func (sm *Manager) SealActiveLayer(fileName string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(fileName)
-	if err != nil {
-		sm.log.Error("Failed to get file ID", "fileName", fileName, "error", err)
-		return fmt.Errorf("failed to get file ID: %w", err)
-	}
-
-	// Get the current active layer ID
-	layers, err := sm.loadLayers()
-	if err != nil {
-		sm.log.Error("Failed to load layers from metadata store", "error", err)
-		return fmt.Errorf("failed to load layers: %w", err)
-	}
-
-	if len(layers) == 0 {
-		return fmt.Errorf("no layers found to seal")
-	}
-
-	current := layers[len(layers)-1]
-	sm.log.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.entryCount())
-
-	if err := sm.sealLayer(current.ID); err != nil {
-		sm.log.Error("Failed to seal layer in metadata store", "layerID", current.ID, "error", err)
-		return fmt.Errorf("failed to seal layer %d: %w", current.ID, err)
-	}
-
-	newLayer := newLayer(fileID)
-	id, err := sm.recordNewLayer(newLayer)
-
-	if err != nil {
-		sm.log.Error("Failed to record new layer", "error", err)
-		return fmt.Errorf("failed to record new layer: %w", err)
-	}
-
-	sm.log.Debug("Created new active layer after sealing", "newLayerID", id)
-
-	return nil
-}
-
-// Write writes data to the active layer at the specified global offset.
+// WriteFile writes data to the active layer at the specified global offset.
 // It returns the active layer's ID and the offset where the data was written.
-func (sm *Manager) Write(fileName string, data []byte, offset uint64) (layerID int64, writtenOffset uint64, err error) {
+func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) (layerID int64, writtenOffset uint64, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	sm.log.Debug("Writing data", "fileName", fileName, "size", len(data), "offset", offset)
+	sm.log.Debug("Writing data", "filename", filename, "size", len(data), "offset", offset)
 
 	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(fileName)
+	fileID, err := sm.GetFileIDByName(filename)
 	if err != nil {
-		sm.log.Error("Failed to get file ID", "fileName", fileName, "error", err)
+		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return 0, 0, fmt.Errorf("failed to get file ID: %w", err)
 	}
 	if fileID == 0 {
-		sm.log.Error("File not found", "fileName", fileName)
+		sm.log.Error("File not found", "filename", filename)
 		return 0, 0, fmt.Errorf("file not found")
 	}
 
@@ -261,61 +188,111 @@ func (sm *Manager) FileSize(id int64) (uint64, error) {
 	return sm.calculateVirtualFileSize(id)
 }
 
-// GetDataRange returns a slice of data from the given offset up to size bytes.
-func (sm *Manager) GetDataRange(fileName string, offset uint64, size uint64) ([]byte, error) {
-	sm.log.Debug("Getting data range from database", "fileName", fileName, "offset", offset, "requestedSize", size)
+// ReadFileOption defines functional options for GetDataRange
+type ReadFileOption func(*readFileOptions)
+
+// readFileOptions holds all options for GetDataRange
+type readFileOptions struct {
+	version string
+}
+
+// WithVersionTag specifies a version tag to retrieve data up to
+func WithVersionTag(version string) ReadFileOption {
+	return func(opts *readFileOptions) {
+		opts.version = version
+	}
+}
+
+// ReadFile returns a slice of data from the given offset up to size bytes.
+// Optional version tag can be specified to retrieve data up to a specific version.
+func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ...ReadFileOption) ([]byte, error) {
+	// Process options
+	options := readFileOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	hasVersion := options.version != ""
+
+	if hasVersion {
+		sm.log.Debug("reading file",
+			"filename", filename,
+			"offset", offset,
+			"size", size,
+			"version", options.version)
+	} else {
+		sm.log.Debug("reading file",
+			"filename", filename,
+			"offset", offset,
+			"size", size)
+	}
 
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(fileName)
-	if fileID == 0 {
-		sm.log.Error("File not found", "fileName", fileName)
+	id, err := sm.GetFileIDByName(filename)
+	if id == 0 {
+		sm.log.Error("File not found", "filename", filename)
 		return nil, fmt.Errorf("file not found")
 	}
 	if err != nil {
-		sm.log.Error("Failed to get file ID", "fileName", fileName, "error", err)
+		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return nil, fmt.Errorf("failed to get file ID: %w", err)
 	}
 
-	// Get full content for this specific file
-	fullContent := sm.GetFullContentForFile(fileID)
+	var layers []*Layer
 
-	if offset >= uint64(len(fullContent)) {
-		sm.log.Debug("Requested offset beyond content size", "offset", offset, "contentSize", len(fullContent))
+	// Load layers for this specific file
+	allLayers, err := sm.LoadLayersByFileID(id)
+	if err != nil {
+		sm.log.Error("failed to load layers", "id", id, "error", err)
+		if hasVersion {
+			return nil, fmt.Errorf("failed to load layers: %w", err)
+		}
 		return []byte{}, nil
 	}
 
-	end := min(offset+size, uint64(len(fullContent)))
+	// If version tag is specified, filter layers by version
+	if hasVersion {
+		// Get version ID from tag
+		versionID, err := sm.GetVersionIDByTag(options.version)
+		if err != nil {
+			sm.log.Error("Failed to get version ID", "versionTag", options.version, "error", err)
+			return nil, fmt.Errorf("failed to get version ID: %w", err)
+		}
 
-	// Create a copy of the slice to prevent race conditions
-	result := make([]byte, end-offset)
-	copy(result, fullContent[offset:end])
+		if versionID == 0 {
+			return nil, fmt.Errorf("version tag '%s' not found", options.version)
+		}
 
-	sm.log.Debug("Returning data range", "offset", offset, "end", end, "returnedSize", end-offset)
-	return result, nil
-}
+		// Filter layers up to the specified version
+		for _, layer := range allLayers {
+			// Include layers with version ID <= requested version ID
+			// Note: We're not including layers with VersionID == 0 (unsealed layers)
+			// as they are created after the version we're interested in
+			if layer.VersionID > 0 && layer.VersionID <= versionID {
+				layers = append(layers, layer)
+			}
+		}
 
-// GetFullContentForFile returns the full content of a specific file by ID
-func (sm *Manager) GetFullContentForFile(id int64) []byte {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	sm.log.Debug("Getting full content for file", "fileID", id)
-
-	// Load layers for this specific file
-	layers, err := sm.LoadLayersByFileID(id)
-	if err != nil {
-		sm.log.Error("Failed to load layers for file", "fileID", id, "error", err)
-		return []byte{}
+		if len(layers) == 0 {
+			sm.log.Warn("No layers found for file up to specified version", "fileID", id, "versionTag", options.version)
+			return []byte{}, nil
+		}
+	} else {
+		// Use all layers when no version is specified
+		layers = allLayers
 	}
 
 	// Load all entries
 	entriesMap, err := sm.loadEntries()
 	if err != nil {
 		sm.log.Error("Failed to load entries from metadata store", "error", err)
-		return []byte{}
+		if hasVersion {
+			return nil, fmt.Errorf("failed to load entries: %w", err)
+		}
+		return []byte{}, nil
 	}
 
 	// Calculate maximum size by finding the highest offset + data length
@@ -354,8 +331,32 @@ func (sm *Manager) GetFullContentForFile(id int64) []byte {
 		}
 	}
 
-	sm.log.Debug("Full content retrieved for file", "fileID", id, "size", len(buf))
-	return buf
+	// Apply offset and size limits to the full content
+	if offset >= uint64(len(buf)) {
+		sm.log.Debug("Requested offset beyond content size", "offset", offset, "contentSize", len(buf))
+		return []byte{}, nil
+	}
+
+	end := min(offset+size, uint64(len(buf)))
+
+	// Create a copy of the slice to prevent race conditions
+	result := make([]byte, end-offset)
+	copy(result, buf[offset:end])
+
+	if hasVersion {
+		sm.log.Debug("Returning data range with version",
+			"offset", offset,
+			"end", end,
+			"returnedSize", end-offset,
+			"versionTag", options.version)
+	} else {
+		sm.log.Debug("Returning data range",
+			"offset", offset,
+			"end", end,
+			"returnedSize", end-offset)
+	}
+
+	return result, nil
 }
 
 func (sm *Manager) GetLayerBase(layerID int64) (uint64, error) {
@@ -458,18 +459,51 @@ func (sm *Manager) recordNewLayer(layer *Layer) (int64, error) {
 }
 
 // sealLayer marks the layer with the given id as sealed.
-func (sm *Manager) sealLayer(layerID int64) error {
-	sm.log.Debug("Sealing layer in metadata store", "layerID", layerID)
+// If versionTag is not empty, it associates the layer with the version.
+func (sm *Manager) sealLayer(layerID int64, versionTag string) error {
+	sm.log.Debug("Sealing layer in metadata store", "layerID", layerID, "versionTag", versionTag)
 
-	query := `UPDATE layers SET sealed = 1 WHERE id = $1;`
-	result, err := sm.db.Exec(query, layerID)
+	var versionID int64 = 0
+	var err error
+
+	// If a version tag is provided, get or create the version
+	if versionTag != "" {
+		// Check if the version already exists
+		versionID, err = sm.GetVersionIDByTag(versionTag)
+		if err != nil {
+			sm.log.Error("Failed to get version ID", "tag", versionTag, "error", err)
+			return err
+		}
+
+		// If the version doesn't exist, create it
+		if versionID == 0 {
+			versionID, err = sm.InsertVersion(versionTag)
+			if err != nil {
+				sm.log.Error("Failed to insert version", "tag", versionTag, "error", err)
+				return err
+			}
+		}
+	}
+
+	// Update the layer with the sealed flag and version ID if provided
+	var query string
+	var result sql.Result
+
+	if versionID > 0 {
+		query = `UPDATE layers SET sealed = 1, version_id = $2 WHERE id = $1;`
+		result, err = sm.db.Exec(query, layerID, versionID)
+	} else {
+		query = `UPDATE layers SET sealed = 1 WHERE id = $1;`
+		result, err = sm.db.Exec(query, layerID)
+	}
+
 	if err != nil {
 		sm.log.Error("Failed to seal layer", "layerID", layerID, "error", err)
 		return err
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	sm.log.Debug("Layer sealed successfully", "layerID", layerID, "rowsAffected", rowsAffected)
+	sm.log.Debug("Layer sealed successfully", "layerID", layerID, "rowsAffected", rowsAffected, "versionID", versionID)
 	return nil
 }
 
@@ -504,7 +538,7 @@ func (sm *Manager) recordEntry(layerID int64, offset uint64, data []byte, layerR
 func (sm *Manager) loadLayers() ([]*Layer, error) {
 	sm.log.Debug("Loading layers from metadata store")
 
-	query := `SELECT id, file_id, sealed FROM layers ORDER BY id ASC;`
+	query := `SELECT id, file_id, sealed, version_id FROM layers ORDER BY id ASC;`
 	rows, err := sm.db.Query(query)
 	if err != nil {
 		sm.log.Error("Failed to query layers", "error", err)
@@ -517,17 +551,23 @@ func (sm *Manager) loadLayers() ([]*Layer, error) {
 
 	for rows.Next() {
 		var id, fileID, sealedInt int64
-		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
+		var versionID sql.NullInt64
+		if err := rows.Scan(&id, &fileID, &sealedInt, &versionID); err != nil {
 			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err
 		}
 
 		layer := newLayer(fileID)
 		layer.ID = id
+		if versionID.Valid {
+			layer.VersionID = versionID.Int64
+		} else {
+			layer.VersionID = 0
+		}
 		layers = append(layers, layer)
 
 		sealed := sealedInt != 0
-		sm.log.Debug("Loaded layer", "layerID", id, "sealed", sealed)
+		sm.log.Debug("Loaded layer", "layerID", id, "sealed", sealed, "versionID", layer.VersionID)
 		layerCount++
 	}
 
@@ -629,7 +669,7 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 
 	// Use a single query with JOIN to get the active layer and its entries
 	query := `
-		SELECT l.id, l.file_id, e.offset_value, e.data, e.layer_range, e.file_range 
+		SELECT l.id, l.file_id, l.version_id, e.offset_value, e.data, e.layer_range, e.file_range 
 		FROM layers l
 		LEFT JOIN entries e ON l.id = e.layer_id
 		WHERE l.sealed = 0
@@ -652,8 +692,12 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 
 	// Create the layer
 	var fileID int64
-	rows.Scan(&fileID)
+	var versionID sql.NullInt64
+	rows.Scan(&fileID, &versionID)
 	layer := newLayer(fileID)
+	if versionID.Valid {
+		layer.VersionID = versionID.Int64
+	}
 
 	// Track statistics
 	var layerID int64
@@ -663,12 +707,13 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 	// Process all rows
 	for {
 		var id, fileID int64
+		var versionID sql.NullInt64
 		var offset sql.NullInt64
 		var data []byte
 		var layerRangeStr, fileRangeStr sql.NullString
 
 		// Scan the current row
-		if err := rows.Scan(&id, &fileID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
+		if err := rows.Scan(&id, &fileID, &versionID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
 			sm.log.Error("Error scanning row", "error", err)
 			return nil, err
 		}
@@ -677,7 +722,10 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 		if layerID == 0 {
 			layerID = id
 			layer.ID = id
-			sm.log.Debug("Found active layer", "layerID", id)
+			if versionID.Valid {
+				layer.VersionID = versionID.Int64
+			}
+			sm.log.Debug("Found active layer", "layerID", id, "versionID", layer.VersionID)
 		} else if id != layerID {
 			// This shouldn't happen with our query, but check anyway
 			sm.log.Error("Unexpected layer ID in results", "expected", layerID, "got", id)
@@ -707,7 +755,8 @@ func (sm *Manager) loadActiveLayer() (*Layer, error) {
 	sm.log.Debug("Active layer loaded successfully",
 		"layerID", layerID,
 		"entriesCount", entriesCount,
-		"totalDataSize", totalDataSize)
+		"totalDataSize", totalDataSize,
+		"versionID", layer.VersionID)
 
 	return layer, nil
 }
@@ -726,8 +775,6 @@ func (sm *Manager) Close() error {
 
 // calculateVirtualFileSize calculates the total byte size of the virtual file from all layers and their entries, respecting layer creation order and handling overlapping file ranges.
 func (sm *Manager) calculateVirtualFileSize(fileID int64) (uint64, error) {
-	sm.log.Debug("Calculating virtual file size from metadata store", "fileID", fileID)
-
 	query := `
 		SELECT e.file_range
 		FROM entries e
@@ -795,7 +842,6 @@ func (sm *Manager) calculateVirtualFileSize(fileID int64) (uint64, error) {
 		totalSize = maxEnd
 	}
 
-	sm.log.Debug("Virtual file size calculated successfully", "totalSize", totalSize)
 	return totalSize, nil
 }
 
@@ -803,7 +849,7 @@ func (sm *Manager) calculateVirtualFileSize(fileID int64) (uint64, error) {
 func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*Layer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
-	query := `SELECT id, file_id, sealed FROM layers WHERE file_id = $1 ORDER BY id ASC;`
+	query := `SELECT id, file_id, sealed, version_id FROM layers WHERE file_id = $1 ORDER BY id ASC;`
 	rows, err := sm.db.Query(query, fileID)
 	if err != nil {
 		sm.log.Error("Failed to query layers for file", "fileID", fileID, "error", err)
@@ -816,17 +862,23 @@ func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*Layer, error) {
 
 	for rows.Next() {
 		var id, sealedInt int64
-		if err := rows.Scan(&id, &fileID, &sealedInt); err != nil {
+		var versionID sql.NullInt64
+		if err := rows.Scan(&id, &fileID, &sealedInt, &versionID); err != nil {
 			sm.log.Error("Error scanning layer row", "error", err)
 			return nil, err
 		}
 
 		layer := newLayer(fileID)
 		layer.ID = id
+		if versionID.Valid {
+			layer.VersionID = versionID.Int64
+		} else {
+			layer.VersionID = 0
+		}
 		layers = append(layers, layer)
 
 		sealed := sealedInt != 0
-		sm.log.Debug("Loaded layer for file", "layerID", id, "sealed", sealed)
+		sm.log.Debug("Loaded layer for file", "layerID", id, "sealed", sealed, "versionID", layer.VersionID)
 		layerCount++
 	}
 
@@ -901,8 +953,47 @@ func (sm *Manager) DeleteFile(name string) error {
 	return nil
 }
 
-func (sm *Manager) Checkpoint(filename string) error {
-	return sm.SealActiveLayer(filename)
+func (sm *Manager) Checkpoint(filename string, version string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Get the file ID from the file name
+	fileID, err := sm.GetFileIDByName(filename)
+	if err != nil {
+		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Get the current active layer ID
+	layers, err := sm.loadLayers()
+	if err != nil {
+		sm.log.Error("Failed to load layers from metadata store", "error", err)
+		return fmt.Errorf("failed to load layers: %w", err)
+	}
+
+	if len(layers) == 0 {
+		return fmt.Errorf("no layers found to seal")
+	}
+
+	current := layers[len(layers)-1]
+	sm.log.Debug("Sealing active layer", "layerID", current.ID, "entryCount", current.entryCount(), "versionTag", version)
+
+	if err := sm.sealLayer(current.ID, version); err != nil {
+		sm.log.Error("Failed to seal layer in metadata store", "layerID", current.ID, "error", err)
+		return fmt.Errorf("failed to seal layer %d: %w", current.ID, err)
+	}
+
+	newLayer := newLayer(fileID)
+	id, err := sm.recordNewLayer(newLayer)
+
+	if err != nil {
+		sm.log.Error("Failed to record new layer", "error", err)
+		return fmt.Errorf("failed to record new layer: %w", err)
+	}
+
+	sm.log.Debug("Created new active layer after sealing", "newLayerID", id)
+
+	return nil
 }
 
 // fileInfo represents basic file information
@@ -940,4 +1031,103 @@ func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
 	}
 
 	return files, nil
+}
+
+// Truncate changes the size of a file to the specified size.
+// If the new size is smaller than the current size, the file is truncated.
+// If the new size is larger than the current size, the file is extended with zero bytes.
+func (sm *Manager) Truncate(filename string, newSize uint64) error {
+	sm.log.Debug("Truncating file", "filename", filename, "newSize", newSize)
+
+	// First, get the file ID and current size without holding any lock
+	fileID, err := sm.GetFileIDByName(filename)
+	if fileID == 0 {
+		sm.log.Error("File not found", "filename", filename)
+		return fmt.Errorf("file not found")
+	}
+	if err != nil {
+		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Get current file size
+	size, err := sm.FileSize(fileID)
+	if err != nil {
+		sm.log.Error("Failed to calculate file size", "filename", filename, "error", err)
+		return fmt.Errorf("failed to calculate file size: %w", err)
+	}
+
+	if newSize == size {
+		sm.log.Debug("New size equals current size, no truncation needed", "size", newSize)
+		return nil
+	} else if newSize < size {
+		sm.log.Info("New size is smaller than current size. This is not supported.", "filename", filename, "oldSize", size, "newSize", newSize)
+		return fmt.Errorf("new size is smaller than current size")
+	} else {
+		// Calculate how many zero bytes to add
+		bytesToAdd := newSize - size
+
+		// Create a buffer of zero bytes
+		zeroes := make([]byte, bytesToAdd)
+
+		// Write the zero bytes at the end of the file
+		_, _, err = sm.WriteFile(filename, zeroes, size)
+		if err != nil {
+			sm.log.Error("Failed to extend file", "filename", filename, "error", err)
+			return fmt.Errorf("failed to extend file: %w", err)
+		}
+
+		sm.log.Debug("File extended successfully", "filename", filename, "oldSize", size, "newSize", newSize)
+		return nil
+	}
+}
+
+// InsertVersion inserts a new version into the versions table and returns its ID.
+func (sm *Manager) InsertVersion(tag string) (int64, error) {
+	sm.log.Debug("Inserting new version into metadata store", "tag", tag)
+
+	query := `INSERT INTO versions (tag) VALUES ($1) RETURNING id;`
+	var versionID int64
+	err := sm.db.QueryRow(query, tag).Scan(&versionID)
+	if err != nil {
+		sm.log.Error("Failed to insert new version", "tag", tag, "error", err)
+		return 0, err
+	}
+
+	sm.log.Debug("Version inserted successfully", "tag", tag, "versionID", versionID)
+	return versionID, nil
+}
+
+// GetVersionIDByTag retrieves the version ID for a given tag.
+func (sm *Manager) GetVersionIDByTag(tag string) (int64, error) {
+	query := `SELECT id FROM versions WHERE tag = $1;`
+	var versionID int64
+	err := sm.db.QueryRow(query, tag).Scan(&versionID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sm.log.Warn("Version not found", "tag", tag)
+			return 0, nil
+		}
+		sm.log.Error("Failed to retrieve version ID", "tag", tag, "error", err)
+		return 0, err
+	}
+
+	return versionID, nil
+}
+
+// GetVersionTagByID retrieves the version tag for a given ID.
+func (sm *Manager) GetVersionTagByID(id int64) (string, error) {
+	query := `SELECT tag FROM versions WHERE id = $1;`
+	var tag string
+	err := sm.db.QueryRow(query, id).Scan(&tag)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sm.log.Warn("Version not found", "id", id)
+			return "", nil
+		}
+		sm.log.Error("Failed to retrieve version tag", "id", id, "error", err)
+		return "", err
+	}
+
+	return tag, nil
 }

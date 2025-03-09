@@ -180,6 +180,7 @@ var _ fs.NodeSetxattrer = (*File)(nil)
 var _ fs.NodeRemovexattrer = (*File)(nil)
 var _ fs.NodeReadlinker = (*File)(nil)
 var _ fs.NodeRemover = (*File)(nil)
+var _ fs.NodeSetattrer = (*File)(nil)
 
 // Attr sets the file attributes
 func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
@@ -218,7 +219,7 @@ func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 	f.log.Debug("Reading file", "name", f.name, "offset", req.Offset, "size", req.Size)
 
 	// Read from the layer manager for all files
-	data, err := f.sm.GetDataRange(f.name, uint64(req.Offset), uint64(req.Size))
+	data, err := f.sm.ReadFile(f.name, uint64(req.Offset), uint64(req.Size))
 	if err != nil {
 		f.log.Error("Failed to read data", "name", f.name, "error", err)
 		return err
@@ -231,35 +232,56 @@ func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 
 // Write appends data via the layer manager. We require that writes are at the end of the file.
 func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	f.log.Debug("Writing to file", "name", f.name, "size", len(req.Data), "offset", req.Offset)
+	f.log.Debug("Writing to file", "name", f.name, "size", len(req.Data), "offset", req.Offset, "fileFlags", req.FileFlags)
 
 	// For consistency, we'll make a copy of the data to prevent races
 	dataCopy := make([]byte, len(req.Data))
 	copy(dataCopy, req.Data)
 
+	id, err := f.sm.GetFileIDByName(f.name)
+	if err != nil {
+		f.log.Error("Failed to get file ID", "name", f.name, "error", err)
+		return err
+	}
+
+	size, err := f.sm.FileSize(id)
+	if err != nil {
+		f.log.Error("Failed to get file size", "name", f.name, "error", err)
+		return err
+	}
+
+	// Check if the write offset is beyond the current file size
+	// If so, we need to extend the file with zeroes first
+	if uint64(req.Offset) > size {
+		f.log.Debug("Write offset beyond file size, filling gap with zeroes",
+			"name", f.name, "currentSize", size, "writeOffset", req.Offset)
+
+		// Use the Truncate method to extend the file to the write offset
+		err := f.sm.Truncate(f.name, uint64(req.Offset))
+		if err != nil {
+			f.log.Error("Failed to extend file with zeroes", "name", f.name, "error", err)
+			return fmt.Errorf("failed to extend file with zeroes: %v", err)
+		}
+	}
+
 	// Use the layer manager to handle the write operation
 	// Pass the file name to the layer manager
-	_, _, err := f.sm.Write(f.name, dataCopy, uint64(req.Offset))
+	_, _, err = f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
 	}
 
-	// Update the file size if this write extends the file
-	newEndOffset := uint64(req.Offset) + uint64(len(req.Data))
-	if newEndOffset > f.fileSize {
-		f.fileSize = newEndOffset
-		f.modified = time.Now()
-		f.log.Debug("Updated file size after write", "name", f.name, "newSize", f.fileSize)
-	}
+	f.fileSize = uint64(req.Offset) + uint64(len(dataCopy))
+	f.modified = time.Now()
 
 	resp.Size = len(req.Data)
 	f.log.Debug("Write successful", "name", f.name, "bytesWritten", resp.Size)
 	return nil
 }
 
-// SetAttr sets file attributes
-func (f *File) SetAttr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
+// Setattr implements the fs.NodeSetattrer interface
+func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
 	f.log.Debug("Setting file attributes", "name", f.name, "valid", req.Valid)
 
 	// Update the times if specified in the request
@@ -271,12 +293,6 @@ func (f *File) SetAttr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	if req.Valid.Mtime() {
 		f.modified = req.Mtime
 		f.log.Debug("Updated mtime", "name", f.name, "mtime", req.Mtime)
-	}
-
-	// Update size if specified
-	if req.Valid.Size() {
-		f.fileSize = req.Size
-		f.log.Debug("Updated file size", "name", f.name, "size", req.Size)
 	}
 
 	f.log.Debug("File attributes updated successfully", "name", f.name)

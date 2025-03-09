@@ -62,6 +62,15 @@ func printUsage() {
 	fmt.Println("  write      - Write data to a file")
 	fmt.Println("  checkpoint - Checkpoint a file")
 	fmt.Println("  read       - Read and print file content to standard output")
+	fmt.Println("")
+	fmt.Println("For detailed command usage:")
+	fmt.Println("  op write -h")
+	fmt.Println("  op checkpoint -h")
+	fmt.Println("  op read -h")
+	fmt.Println("")
+	fmt.Println("Examples:")
+	fmt.Println("  op read -file myfile.txt")
+	fmt.Println("  op read -file myfile.txt -version v1.0")
 }
 
 // executeWriteCommand handles the "write" subcommand
@@ -132,7 +141,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 			// Fill the gap with null bytes if needed
 			if gapSize > 0 {
 				nullBytes := make([]byte, gapSize)
-				_, _, err := sm.Write(*fileName, nullBytes, fileSize)
+				_, _, err := sm.WriteFile(*fileName, nullBytes, fileSize)
 				if err != nil {
 					log.Fatal("Failed to fill gap with null bytes", "error", err)
 				}
@@ -143,7 +152,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 
 	// Write the data to the file at the specified offset
 	dataBytes := []byte(*data)
-	layerID, writtenOffset, err := sm.Write(*fileName, dataBytes, *offset)
+	layerID, writtenOffset, err := sm.WriteFile(*fileName, dataBytes, *offset)
 	if err != nil {
 		log.Fatal("Failed to write data", "error", err)
 	}
@@ -163,6 +172,7 @@ func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	// Define command-line flags for checkpoint command
 	checkpointCmd := flag.NewFlagSet("checkpoint", flag.ExitOnError)
 	fileName := checkpointCmd.String("file", "", "Target file to checkpoint")
+	versionTag := checkpointCmd.String("version", "", "Version tag to associate with the sealed layer")
 
 	// Parse the flags
 	checkpointCmd.Parse(os.Args[1:])
@@ -170,7 +180,7 @@ func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	// Validate required flags
 	if *fileName == "" {
 		log.Error("Missing required flag: -file")
-		fmt.Println("Usage: op checkpoint -file <filename>")
+		fmt.Println("Usage: op checkpoint -file <filename> [-version <tag>]")
 		os.Exit(1)
 	}
 
@@ -188,13 +198,19 @@ func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	}
 
 	// Checkpoint the file
-	err = sm.Checkpoint(*fileName)
+	err = sm.Checkpoint(*fileName, *versionTag)
 	if err != nil {
 		log.Fatal("Failed to checkpoint file", "error", err)
 	}
 
-	log.Info("File checkpointed successfully", "fileName", *fileName)
-	fmt.Printf("Successfully checkpointed file %s\n", *fileName)
+	// Log success message with version tag if provided
+	if *versionTag != "" {
+		log.Info("File checkpointed successfully", "fileName", *fileName, "version", *versionTag)
+		fmt.Printf("Successfully checkpointed file %s with version tag %s\n", *fileName, *versionTag)
+	} else {
+		log.Info("File checkpointed successfully", "fileName", *fileName)
+		fmt.Printf("Successfully checkpointed file %s\n", *fileName)
+	}
 }
 
 // executeReadCommand handles the "read" subcommand
@@ -204,6 +220,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	fileName := readCmd.String("file", "", "Target file to read from")
 	offset := readCmd.Uint64("offset", 0, "Offset in the file to start reading from (default: 0)")
 	size := readCmd.Uint64("size", 0, "Number of bytes to read (default: entire file)")
+	versionTag := readCmd.String("version", "", "Version tag to read from (default: latest)")
 
 	// Parse the flags
 	readCmd.Parse(os.Args[1:])
@@ -211,7 +228,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	// Validate required flags
 	if *fileName == "" {
 		log.Error("Missing required flag: -file")
-		fmt.Println("Usage: op read -file <filename> [-offset <offset>] [-size <size>]")
+		fmt.Println("Usage: op read -file <filename> [-offset <offset>] [-size <size>] [-version <tag>]")
 		os.Exit(1)
 	}
 
@@ -240,18 +257,47 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 		readSize = fileSize - *offset
 	}
 
-	// Read the data from the file
-	data, err := sm.GetDataRange(*fileName, *offset, readSize)
-	if err != nil {
-		log.Fatal("Failed to read data", "error", err)
+	var data []byte
+
+	// Read the data from the file, using version-specific method if a version tag is provided
+	if *versionTag != "" {
+		log.Info("Reading file content with version",
+			"fileName", *fileName,
+			"offset", *offset,
+			"size", readSize,
+			"versionTag", *versionTag)
+
+		data, err = sm.ReadFile(*fileName, *offset, readSize, storage.WithVersionTag(*versionTag))
+		if err != nil {
+			log.Fatal("Failed to read data with version", "error", err)
+		}
+	} else {
+		log.Info("Reading file content",
+			"fileName", *fileName,
+			"offset", *offset,
+			"size", readSize)
+
+		data, err = sm.ReadFile(*fileName, *offset, readSize)
+		if err != nil {
+			log.Fatal("Failed to read data", "error", err)
+		}
 	}
 
 	// Print file information
-	log.Info("Reading file content",
-		"fileName", *fileName,
-		"offset", *offset,
-		"size", readSize,
-		"bytesRead", len(data))
+	if *versionTag != "" {
+		log.Info("Read file content with version",
+			"fileName", *fileName,
+			"offset", *offset,
+			"size", readSize,
+			"bytesRead", len(data),
+			"versionTag", *versionTag)
+	} else {
+		log.Info("Read file content",
+			"fileName", *fileName,
+			"offset", *offset,
+			"size", readSize,
+			"bytesRead", len(data))
+	}
 
 	// Print the data to stdout
 	fmt.Print(string(data))

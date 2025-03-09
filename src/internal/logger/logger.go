@@ -15,7 +15,7 @@ func New(output *os.File) *log.Logger {
 	logger := log.NewWithOptions(os.Stderr, log.Options{
 		ReportCaller:    level == "debug",
 		ReportTimestamp: true,
-		TimeFormat:      time.Kitchen,
+		TimeFormat:      time.TimeOnly,
 	})
 
 	if level != "" {
