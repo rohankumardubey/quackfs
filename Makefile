@@ -3,10 +3,10 @@
 .DEFAULT_GOAL := run
 
 build:
-	go build -o difffs.exe ./src/cmd/difffs
+	GOEXPERIMENT=synctest go build -o difffs.exe ./src/cmd/difffs
 
 test: db.test.drop db.test.init
-	go test -timeout 5s -p 1 -race -shuffle=on -v ./src/... $(TEST)
+	GOEXPERIMENT=synctest go test -timeout 5s -p 1 -race -shuffle=on -v ./src/... $(TEST)
 
 clean: db.drop
 	fusermount3 -u /tmp/fuse || true

@@ -71,6 +71,7 @@ RUN apt-get update \
 
 # Install DuckDB
 RUN curl https://install.duckdb.org | sh
+RUN echo "export PATH='/home/codespace/.duckdb/cli/latest':$PATH" >> /home/codespace/.zshrc
 
 # Default to bash shell (other shells available at /usr/bin/fish and /usr/bin/zsh)
 ENV SHELL=/bin/zsh \
