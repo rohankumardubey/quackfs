@@ -238,36 +238,9 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	dataCopy := make([]byte, len(req.Data))
 	copy(dataCopy, req.Data)
 
-	id, err := f.sm.GetFileIDByName(f.name)
-	if err != nil {
-		f.log.Error("Failed to get file ID", "name", f.name, "error", err)
-		return err
-	}
-
-	size, err := f.sm.FileSize(id)
-	if err != nil {
-		f.log.Error("Failed to get file size", "name", f.name, "error", err)
-		return err
-	}
-
-	// Check if the write offset is beyond the current file size
-	// If so, we need to extend the file with zeroes first
-	if uint64(req.Offset) > size {
-		f.log.Debug("Write offset beyond file size, filling gap with zeroes",
-			"name", f.name, "currentSize", size, "writeOffset", req.Offset)
-
-		// Use the Truncate method to extend the file to the write offset
-		// TODO: Truncate shouldn't be exposed to the file system layer. The WriteFile method should handle this.
-		err := f.sm.Truncate(f.name, uint64(req.Offset))
-		if err != nil {
-			f.log.Error("Failed to extend file with zeroes", "name", f.name, "error", err)
-			return fmt.Errorf("failed to extend file with zeroes: %v", err)
-		}
-	}
-
 	// Use the layer manager to handle the write operation
 	// Pass the file name to the layer manager
-	err = f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
+	err := f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)

@@ -29,13 +29,6 @@ func newSnapshotLayer(fileID int64) *SnapshotLayer {
 	}
 }
 
-// addChunk adds data at the specified offset within the layer
-func (l *SnapshotLayer) addChunk(off uint64, data []byte) {
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	l.chunks[off] = cp
-}
-
 type Manager struct {
 	mu  sync.RWMutex // Primary mutex for protecting all shared state
 	db  *sql.DB
@@ -90,8 +83,24 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 	}
 
 	if offset > fileSize {
-		sm.log.Error("Write offset is beyond file size", "offset", offset, "fileSize", fileSize)
-		return fmt.Errorf("write offset is beyond file size")
+		// Calculate how many zero bytes to add
+		bytesToAdd := offset - fileSize
+
+		// Create a buffer of zero bytes
+		zeroes := make([]byte, bytesToAdd)
+
+		layerRange, fileRange, err := sm.calculateRanges(layerID, fileSize, len(zeroes))
+		if err != nil {
+			sm.log.Error("Failed to calculate ranges", "layerID", layerID, "offset", offset, "error", err)
+			return fmt.Errorf("failed to calculate ranges: %w", err)
+		}
+
+		if err = sm.insertChunk(layerID, offset, zeroes, layerRange, fileRange); err != nil {
+			sm.log.Error("Failed to record chunk", "layerID", layerID, "offset", offset, "error", err)
+			return fmt.Errorf("failed to record chunk: %w", err)
+		}
+
+		sm.log.Debug("Added chunk to active layer", "layerID", layerID, "offset", offset, "size", len(zeroes))
 	}
 
 	sm.log.Debug("Added chunk to active layer", "layerID", layerID, "offset", offset, "size", len(data))
@@ -246,26 +255,105 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		layers = allLayers
 	}
 
-	// Load all chunks
-	chunksMap, err := sm.loadChunksBySnapshotLayerID()
+	// Load all chunks directly from the database with proper ordering
+	// This ensures we get chunks in the exact order they were inserted
+	query := `
+		SELECT c.snapshot_layer_id, c.offset_value, c.data, c.layer_range, c.file_range
+		FROM chunks c
+		JOIN snapshot_layers l ON c.snapshot_layer_id = l.id
+		WHERE l.file_id = $1
+		ORDER BY c.id ASC;
+	`
+	rows, err := sm.db.Query(query, id)
 	if err != nil {
-		sm.log.Error("Failed to load chunks from metadata store", "error", err)
-		if hasVersion {
-			return nil, fmt.Errorf("failed to load chunks: %w", err)
-		}
-		return []byte{}, nil
+		sm.log.Error("Failed to query chunks", "error", err)
+		return nil, err
 	}
+	defer rows.Close()
 
-	// Calculate maximum size by finding the highest offset + data length
+	// Map to store chunks by layer ID
+	chunksMap := make(map[int64][]Chunk)
+
+	// Track the maximum size needed for the buffer
 	var maxSize uint64 = 0
 
-	for _, layer := range layers {
-		if chunks, ok := chunksMap[int64(layer.ID)]; ok {
-			for _, chunk := range chunks {
-				endOffset := chunk.Offset + uint64(len(chunk.Data))
-				if endOffset > maxSize {
-					maxSize = endOffset
+	// Process all chunks
+	for rows.Next() {
+		var layerID int64
+		var offset uint64
+		var data []byte
+		var layerRangeStr, fileRangeStr sql.NullString
+
+		if err := rows.Scan(&layerID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
+			sm.log.Error("Error scanning chunk row", "error", err)
+			return nil, err
+		}
+
+		// Parse layer range
+		layerRange := [2]uint64{0, 0}
+		if layerRangeStr.Valid {
+			parts := strings.Split(strings.Trim(layerRangeStr.String, "[)"), ",")
+			if len(parts) == 2 {
+				start, err := strconv.ParseUint(parts[0], 10, 64)
+				if err != nil {
+					sm.log.Error("Error parsing layer range start", "value", parts[0], "error", err)
+					return nil, err
 				}
+				end, err := strconv.ParseUint(parts[1], 10, 64)
+				if err != nil {
+					sm.log.Error("Error parsing layer range end", "value", parts[1], "error", err)
+					return nil, err
+				}
+				layerRange[0] = start
+				layerRange[1] = end
+			}
+		}
+
+		// Parse file range
+		fileRange := [2]uint64{0, 0}
+		if fileRangeStr.Valid {
+			parts := strings.Split(strings.Trim(fileRangeStr.String, "[)"), ",")
+			if len(parts) == 2 {
+				start, err := strconv.ParseUint(parts[0], 10, 64)
+				if err != nil {
+					sm.log.Error("Error parsing file range start", "value", parts[0], "error", err)
+					return nil, err
+				}
+				end, err := strconv.ParseUint(parts[1], 10, 64)
+				if err != nil {
+					sm.log.Error("Error parsing file range end", "value", parts[1], "error", err)
+					return nil, err
+				}
+				fileRange[0] = start
+				fileRange[1] = end
+			}
+		}
+
+		// Create chunk and add to map
+		chunk := Chunk{
+			LayerID:    layerID,
+			Offset:     offset,
+			Data:       data,
+			LayerRange: layerRange,
+			FileRange:  fileRange,
+		}
+
+		// Check if this layer is in our filtered layers
+		layerIncluded := false
+		for _, layer := range layers {
+			if layer.ID == layerID {
+				layerIncluded = true
+				break
+			}
+		}
+
+		if layerIncluded {
+			chunksMap[layerID] = append(chunksMap[layerID], chunk)
+
+			// Update max size
+			endOffset := offset + uint64(len(data))
+			if endOffset > maxSize {
+				maxSize = endOffset
 			}
 		}
 	}
@@ -273,17 +361,19 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	// Create buffer of appropriate size
 	buf := make([]byte, maxSize)
 
-	// Merge layers in order (later layers override earlier ones)
+	// Apply chunks in the correct order
+	// For each layer (in order from oldest to newest)
 	for _, layer := range layers {
-		if chunks, ok := chunksMap[int64(layer.ID)]; ok {
-			// Chunks are already sorted by offset from the database
+		if chunks, ok := chunksMap[layer.ID]; ok {
+			// For each chunk in this layer
 			for _, chunk := range chunks {
-				if chunk.Offset+uint64(len(chunk.Data)) <= uint64(len(buf)) {
-					copy(buf[chunk.Offset:chunk.Offset+uint64(len(chunk.Data))], chunk.Data)
+				// Copy the chunk data to the buffer at the appropriate offset
+				end := chunk.Offset + uint64(len(chunk.Data))
+				if end <= uint64(len(buf)) {
+					copy(buf[chunk.Offset:end], chunk.Data)
 				} else {
 					// Handle case where chunk extends beyond current buffer
-					newSize := chunk.Offset + uint64(len(chunk.Data))
-					newBuf := make([]byte, newSize)
+					newBuf := make([]byte, end)
 					copy(newBuf, buf)
 					copy(newBuf[chunk.Offset:], chunk.Data)
 					buf = newBuf
@@ -888,54 +978,4 @@ func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
 	}
 
 	return files, nil
-}
-
-// Truncate changes the size of a file to the specified size.
-// If the new size is smaller than the current size, the file is truncated.
-// If the new size is larger than the current size, the file is extended with zero bytes.
-// ! FIX(vinimdocarmo): this functions should be aware of database transactions.
-func (sm *Manager) Truncate(filename string, newSize uint64) error {
-	sm.log.Debug("Truncating file", "filename", filename, "newSize", newSize)
-
-	// First, get the file ID and current size without holding any lock
-	fileID, err := sm.GetFileIDByName(filename)
-	if fileID == 0 {
-		sm.log.Error("File not found", "filename", filename)
-		return fmt.Errorf("file not found")
-	}
-	if err != nil {
-		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
-		return fmt.Errorf("failed to get file ID: %w", err)
-	}
-
-	// Get current file size
-	size, err := sm.FileSize(fileID)
-	if err != nil {
-		sm.log.Error("Failed to calculate file size", "filename", filename, "error", err)
-		return fmt.Errorf("failed to calculate file size: %w", err)
-	}
-
-	if newSize == size {
-		sm.log.Debug("New size equals current size, no truncation needed", "size", newSize)
-		return nil
-	} else if newSize < size {
-		sm.log.Info("New size is smaller than current size. This is not supported.", "filename", filename, "oldSize", size, "newSize", newSize)
-		return fmt.Errorf("new size is smaller than current size")
-	} else {
-		// Calculate how many zero bytes to add
-		bytesToAdd := newSize - size
-
-		// Create a buffer of zero bytes
-		zeroes := make([]byte, bytesToAdd)
-
-		// Write the zero bytes at the end of the file
-		err = sm.WriteFile(filename, zeroes, size)
-		if err != nil {
-			sm.log.Error("Failed to extend file", "filename", filename, "error", err)
-			return fmt.Errorf("failed to extend file: %w", err)
-		}
-
-		sm.log.Debug("File extended successfully", "filename", filename, "oldSize", size, "newSize", newSize)
-		return nil
-	}
 }

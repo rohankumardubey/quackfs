@@ -294,7 +294,7 @@ func TestFuseScenario(t *testing.T) {
 	assert.Equal(t, combinedData, readAfterRestart, "Data should persist after restart")
 }
 
-func TestFailedWriteBeyondFileSize(t *testing.T) {
+func TestWriteBeyondFileSize(t *testing.T) {
 	// Setup a storage manager
 	sm, cleanup := difffstest.SetupStorageManager(t)
 	defer cleanup()
@@ -309,7 +309,12 @@ func TestFailedWriteBeyondFileSize(t *testing.T) {
 	require.NoError(t, err, "Failed to write 'first'")
 
 	err = sm.WriteFile(filename, []byte("second"), 10)
-	require.Error(t, err, "Write should fail because it's beyond the file size")
+	require.NoError(t, err, "Write should fail because it's beyond the file size")
+
+	// check file content
+	content, err := sm.ReadFile(filename, 0, 16)
+	require.NoError(t, err, "Failed to read file content")
+	assert.Equal(t, []byte("first\x00\x00\x00\x00\x00second"), content, "File content should match 'firstsecond'")
 }
 
 func TestCalculateVirtualFileSize(t *testing.T) {
@@ -534,122 +539,6 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 	assert.Equal(t, expectedContent, fullContentAfterPartial, "Full content should reflect partial overwrite")
 }
 
-func TestTruncateFile(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	filename := "testfile_truncate"
-
-	// Insert the file
-	fileID, err := sm.InsertFile(filename)
-	require.NoError(t, err, "Failed to insert file")
-
-	// Write initial content
-	initialContent := []byte("Hello, this is a test file for truncation.")
-	err = sm.WriteFile(filename, initialContent, 0)
-	require.NoError(t, err, "Failed to write initial content")
-
-	// Verify initial content and size
-	content, err := sm.ReadFile(filename, 0, uint64(len(initialContent)))
-	require.NoError(t, err, "Failed to read initial content")
-	assert.Equal(t, initialContent, content, "Initial content should match what was written")
-
-	initialSize, err := sm.FileSize(fileID)
-	require.NoError(t, err, "Failed to get initial file size")
-	assert.Equal(t, uint64(len(initialContent)), initialSize, "Initial file size should match content length")
-
-	// Test extending to a larger size
-	largerSize := uint64(50) // Extend to 50 bytes
-	err = sm.Truncate(filename, largerSize)
-	require.NoError(t, err, "Failed to extend file to larger size")
-
-	// Get the new file ID after extension
-	fileID, err = sm.GetFileIDByName(filename)
-	require.NoError(t, err, "Failed to get file ID after extension")
-
-	// Verify extended size
-	extendedSize, err := sm.FileSize(fileID)
-	require.NoError(t, err, "Failed to get file size after extension")
-	assert.Equal(t, largerSize, extendedSize, "File size after extension should match requested size")
-
-	// Verify extended content (original content + zero padding)
-	extendedContent, err := sm.ReadFile(filename, 0, largerSize)
-	require.NoError(t, err, "Failed to read extended content")
-
-	// Rest should be zeros
-	zeroFilled := true
-	for i := uint64(len(initialContent)); i < largerSize; i++ {
-		if extendedContent[i] != 0 {
-			zeroFilled = false
-			break
-		}
-	}
-	assert.True(t, zeroFilled, "Extended portion of the file should be filled with zeros")
-}
-
-func TestTruncateToSameSize(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	filename := "testfile_truncate_same_size"
-
-	// Insert the file
-	fileID, err := sm.InsertFile(filename)
-	require.NoError(t, err, "Failed to insert file")
-
-	// Write initial content
-	initialContent := []byte("Hello, world!")
-	err = sm.WriteFile(filename, initialContent, 0)
-	require.NoError(t, err, "Failed to write initial content")
-
-	// Get initial size
-	initialSize, err := sm.FileSize(fileID)
-	require.NoError(t, err, "Failed to get initial file size")
-
-	// Truncate to the same size
-	err = sm.Truncate(filename, initialSize)
-	require.NoError(t, err, "Failed to truncate file to same size")
-
-	// Verify size hasn't changed
-	newSize, err := sm.FileSize(fileID)
-	require.NoError(t, err, "Failed to get file size after truncation")
-	assert.Equal(t, initialSize, newSize, "File size should not change when truncating to same size")
-
-	// Verify content hasn't changed
-	content, err := sm.ReadFile(filename, 0, initialSize)
-	require.NoError(t, err, "Failed to read content after truncation")
-	assert.Equal(t, initialContent, content, "Content should not change when truncating to same size")
-}
-
-func TestTruncateNonExistentFile(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	// Try to truncate a non-existent file
-	err := sm.Truncate("non_existent_file", 10)
-	assert.Error(t, err, "Truncating a non-existent file should return an error")
-	assert.Contains(t, err.Error(), "file not found", "Error should indicate file not found")
-}
-
-func TestTruncateToSmallerSize(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	filename := "testfile_truncate_smaller"
-	_, err := sm.InsertFile(filename)
-	require.NoError(t, err, "Failed to insert file")
-
-	// Write initial content
-	initialContent := []byte("Hello, world!")
-	err = sm.WriteFile(filename, initialContent, 0)
-	require.NoError(t, err, "Failed to write initial content")
-
-	// Truncate to a smaller size
-	smallerSize := uint64(5) // Truncate to first 5 bytes
-	err = sm.Truncate(filename, smallerSize)
-	require.Error(t, err, "Truncating to a smaller size should return an error")
-}
-
 func TestVersionedLayers(t *testing.T) {
 	// Setup a storage manager
 	sm, cleanup := difffstest.SetupStorageManager(t)
@@ -771,6 +660,102 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 	_, err = sm.ReadFile(filename, 0, 100, storage.WithVersionTag("non_existent_version"))
 	assert.Error(t, err, "Expected error when reading with non-existent version")
 	assert.Contains(t, err.Error(), "version tag not found", "Error should indicate version tag not found")
+}
+
+func TestWithinAndOverlappingWrites(t *testing.T) {
+	/**
+	[2000, 4000):   	----------
+	[1024, 2048):     @@@@@
+	[3000, 6000):              %%%%%%%%%
+	[0, 4096):   	***************
+	*/
+
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	filename := "testfile_within_and_overlapping_writes"
+	_, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	first := make([]byte, 4096)
+	// fill with *
+	for i := range first {
+		first[i] = '*'
+	}
+
+	err = sm.WriteFile(filename, first, 0)
+	require.NoError(t, err, "Failed to write first data")
+
+	{
+		// check content
+		content, err := sm.ReadFile(filename, 0, 4096)
+		require.NoError(t, err, "Failed to read first data")
+		assert.Equal(t, first, content, "Content should match")
+	}
+
+	second := make([]byte, 3000)
+	// fill with %
+	for i := range second {
+		second[i] = '%'
+	}
+
+	err = sm.WriteFile(filename, second, 3000)
+	require.NoError(t, err, "Failed to write second data")
+
+	{
+		// check content
+		content, err := sm.ReadFile(filename, 0, 6000)
+		require.NoError(t, err, "Failed to read first data")
+		require.Equal(t, len(content), 6000, "Content should be 6000 bytes long")
+		assert.Equal(t, string(content[:1024]), string(first[:1024]), "Bytes 0-1024 should match")
+	}
+
+	third := make([]byte, 1024)
+	// fill with @
+	for i := range third {
+		third[i] = '@'
+	}
+
+	err = sm.WriteFile(filename, third, 1024)
+	require.NoError(t, err, "Failed to write third data")
+
+	{
+		// check content
+		content, err := sm.ReadFile(filename, 0, 6000)
+		require.NoError(t, err, "Failed to read first data")
+		require.Equal(t, len(content), 6000, "Content should be 6000 bytes long")
+		assert.Equal(t, string(content[:1024]), string(first[:1024]), "Bytes 0-1024 should match")
+		assert.Equal(t, string(content[1024:2048]), string(third), "Bytes 1024-2048 should match")
+		assert.Equal(t, string(content[2048:3000]), string(first[:952]), "Bytes 2048-3000 should match")
+		assert.Equal(t, string(content[3000:6000]), string(second), "Bytes 3000-6000 should match")
+	}
+
+	fourth := make([]byte, 2000)
+	// fill with -
+	for i := range fourth {
+		fourth[i] = '-'
+	}
+
+	err = sm.WriteFile(filename, fourth, 2000)
+	require.NoError(t, err, "Failed to write fourth data")
+
+	{
+		// check content
+		content, err := sm.ReadFile(filename, 0, 6000)
+		require.NoError(t, err, "Failed to read first data")
+		require.Equal(t, len(content), 6000, "Content should be 6000 bytes long")
+
+		// the final expected content should be:
+		// [0, 1024): ****...
+		// [1024, 2000): @@@@@...
+		// [2000, 4000): ----------
+		// [4000, 6000): %%%%...
+
+		assert.Equal(t, string(content[:1024]), string(first[:1024]), "Bytes 0-1024 should match")
+		assert.Equal(t, string(content[1024:2000]), string(third[:976]), "Bytes 1024-2000 should match")
+		assert.Equal(t, string(content[2000:4000]), string(fourth[:2000]), "Bytes 2000-4000 should match")
+		assert.Equal(t, string(content[4000:6000]), string(second[:2000]), "Bytes 4000-6000 should match")
+	}
 }
 
 func getVersionIDByTag(t *testing.T, db *sql.DB, tag string) int64 {

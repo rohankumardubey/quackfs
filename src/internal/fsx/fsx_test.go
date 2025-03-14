@@ -172,19 +172,19 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	defer cleanup()
 
 	// Create a test file
-	fileName := "test_write_beyond.txt"
+	filename := "test_write_beyond.txt"
 	initialContent := []byte("initial")
-	fileID, err := sm.InsertFile(fileName)
+	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err)
 	require.NotZero(t, fileID)
 
 	// Write initial content at offset 0
-	err = sm.WriteFile(fileName, initialContent, 0)
+	err = sm.WriteFile(filename, initialContent, 0)
 	require.NoError(t, err)
 
 	// Create a FUSE file instance
 	file := &File{
-		name:     fileName,
+		name:     filename,
 		created:  time.Now(),
 		modified: time.Now(),
 		accessed: time.Now(),
@@ -209,8 +209,11 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(beyondData), resp.Size)
 
+	fileSize, err := sm.FileSize(fileID)
+	require.NoError(t, err)
+
 	// Read the entire file to verify the content
-	data, err := sm.ReadFile(fileName, 0, 100)
+	data, err := sm.ReadFile(filename, 0, fileSize)
 	require.NoError(t, err)
 
 	// Verify the file size
@@ -227,6 +230,29 @@ func TestWriteBeyondFileSize(t *testing.T) {
 
 	// Verify the beyond data is written correctly
 	require.Equal(t, beyondData, data[beyondOffset:beyondOffset+int64(len(beyondData))])
+}
+
+func TestFileEmptyWriteNonZeroOffset(t *testing.T) {
+	// Set up test environment
+	sm, _, cleanup := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a test file
+	filename := "test_empty_write.txt"
+	fileID, err := sm.InsertFile(filename)
+	require.NoError(t, err)
+	require.NotZero(t, fileID)
+
+	// Write empty data at offset 10
+	err = sm.WriteFile(filename, []byte("hello"), 10)
+	require.NoError(t, err)
+
+	// Read the file to verify the content
+	data, err := sm.ReadFile(filename, 0, 15)
+	require.NoError(t, err)
+
+	require.Equal(t, "hello", string(data[10:]))
+	require.Equal(t, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00hello", string(data))
 }
 
 // setupTestEnvironment creates a storage manager and logger for testing
