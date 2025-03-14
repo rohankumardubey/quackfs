@@ -56,10 +56,7 @@ Differential Storage System
 	}
 	defer db.Close()
 
-	sm, err := storage.NewManager(db, log)
-	if err != nil {
-		log.Fatal("Failed to create storage manager", "error", err)
-	}
+	sm := storage.NewManager(db, log)
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint, fuse.FSName("difffs"))

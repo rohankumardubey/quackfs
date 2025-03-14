@@ -179,7 +179,7 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	require.NotZero(t, fileID)
 
 	// Write initial content at offset 0
-	_, _, err = sm.WriteFile(fileName, initialContent, 0)
+	err = sm.WriteFile(fileName, initialContent, 0)
 	require.NoError(t, err)
 
 	// Create a FUSE file instance

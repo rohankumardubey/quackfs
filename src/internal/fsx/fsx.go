@@ -257,6 +257,7 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 			"name", f.name, "currentSize", size, "writeOffset", req.Offset)
 
 		// Use the Truncate method to extend the file to the write offset
+		// TODO: Truncate shouldn't be exposed to the file system layer. The WriteFile method should handle this.
 		err := f.sm.Truncate(f.name, uint64(req.Offset))
 		if err != nil {
 			f.log.Error("Failed to extend file with zeroes", "name", f.name, "error", err)
@@ -266,7 +267,7 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 
 	// Use the layer manager to handle the write operation
 	// Pass the file name to the layer manager
-	_, _, err = f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
+	err = f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
@@ -295,6 +296,8 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 		f.log.Debug("Updated mtime", "name", f.name, "mtime", req.Mtime)
 	}
 
+	// TODO: truncate file if size is different than current size
+
 	f.log.Debug("File attributes updated successfully", "name", f.name)
 
 	return nil
@@ -312,7 +315,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 
 func (f *File) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, resp *fuse.GetxattrResponse) error {
 	f.log.Debug("Getting extended attribute", "name", f.name, "attr", req.Name)
-	return fuse.ENODATA
+	return nil
 }
 
 func (f *File) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, resp *fuse.ListxattrResponse) error {

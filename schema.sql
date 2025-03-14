@@ -10,21 +10,21 @@ CREATE TABLE IF NOT EXISTS versions (
     tag TEXT NOT NULL
 );
 
--- Create layers table
-CREATE TABLE IF NOT EXISTS layers (
+-- Create snapshot_layers table
+CREATE TABLE IF NOT EXISTS snapshot_layers (
     id SERIAL PRIMARY KEY,
     file_id INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    sealed INTEGER DEFAULT 0,
+    active INTEGER DEFAULT 0,
     version_id INTEGER DEFAULT NULL REFERENCES versions(id),
-    CHECK ((sealed = 0 AND version_id IS NULL) OR (sealed = 1 AND version_id IS NOT NULL)),
+    CHECK ((active = 1 AND version_id IS NULL) OR (active = 0 AND version_id IS NOT NULL)), -- version_id is NULL for the active snapshot layer
     UNIQUE (file_id, version_id)
 );
 
--- Create entries table with proper index creation and range columns
-CREATE TABLE IF NOT EXISTS entries (
+-- Create chunks table with proper index creation and range columns
+CREATE TABLE IF NOT EXISTS chunks (
     id SERIAL PRIMARY KEY,
-    layer_id INTEGER REFERENCES layers(id),
+    snapshot_layer_id INTEGER REFERENCES snapshot_layers(id),
     offset_value BIGINT NOT NULL,
     data BYTEA NOT NULL,
     layer_range INT8RANGE NOT NULL,

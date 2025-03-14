@@ -1,6 +1,7 @@
 package storage_test
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,7 @@ func TestWriteReadActiveLayer(t *testing.T) {
 
 	filename := "testfile_write_read" // Unique file name for testing
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
@@ -25,9 +26,8 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	require.Equal(t, 1, len(layers), "Expected one initial layer")
 
 	input := []byte("hello world")
-	layerID, offset, err := sm.WriteFile(filename, input, 0)
+	err = sm.WriteFile(filename, input, 0)
 	require.NoError(t, err, "Write error")
-	assert.Equal(t, uint64(0), offset, "Initial write offset should be 0")
 
 	// Get the file size to read the entire content
 	fileSize, err := sm.FileSize(fileID)
@@ -36,22 +36,18 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	require.NoError(t, err, "Failed to get full content")
 	assert.Equal(t, len(input), len(fullContent), "Full content length should match input length")
 
-	data, err := sm.ReadFile(filename, offset, uint64(len(input)))
+	data, err := sm.ReadFile(filename, 0, uint64(len(input)))
 	require.NoError(t, err, "GetDataRange error")
 	assert.Equal(t, input, data, "Retrieved data should match input")
-
-	activeLayer := sm.ActiveLayer()
-	require.NotNil(t, activeLayer, "Active layer should not be nil")
-	assert.Equal(t, activeLayer.ID, layerID, "Write should return the active layer's ID")
 }
 
-func TestSealLayerNewActiveLayer(t *testing.T) {
+func TestCheckpointingNewActiveLayer(t *testing.T) {
 	sm, cleanup := difffstest.SetupStorageManager(t)
 	defer cleanup()
 
-	filename := "testfile_seal_layer" // Unique file name for testing
+	filename := "testfile_checkpoint_layer" // Unique file name for testing
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
@@ -61,49 +57,46 @@ func TestSealLayerNewActiveLayer(t *testing.T) {
 	require.Equal(t, 1, len(layers), "Expected one initial layer")
 
 	input1 := []byte("data1")
-	layerID1, offset1, err := sm.WriteFile(filename, input1, 0)
+	err = sm.WriteFile(filename, input1, 0)
 	require.NoError(t, err, "Write error")
-	assert.Equal(t, uint64(0), offset1, "First write offset in active layer should be 0")
 
 	err = sm.Checkpoint(filename, "v1")
-	require.NoError(t, err, "SealActiveLayer failed")
+	require.NoError(t, err, "Checkpoint failed")
 
-	active := sm.ActiveLayer()
-	require.NotNil(t, active, "Active layer should not be nil")
-	assert.Equal(t, layerID1+1, active.ID, "Active layer should change after sealing")
+	db := difffstest.SetupDB(t)
+	defer db.Close()
 
 	input2 := []byte("data2")
-	layerID2, offset2, err := sm.WriteFile(filename, input2, uint64(len(input1)))
+	err = sm.WriteFile(filename, input2, uint64(len(input1)))
 	require.NoError(t, err, "Write error")
-	require.Equal(t, layerID2, active.ID, "Second write should be in new active layer")
 
-	data, err := sm.ReadFile(filename, offset2, uint64(len(input2)))
+	data, err := sm.ReadFile(filename, uint64(len(input1)), uint64(len(input2)))
 	require.NoError(t, err, "GetDataRange error")
 	assert.Equal(t, input2, data, "Retrieved data should match second input")
 }
 
-func TestReadFromSealedLayer(t *testing.T) {
+func TestReadFromActiveLayer(t *testing.T) {
 	sm, cleanup := difffstest.SetupStorageManager(t)
 	defer cleanup()
 
-	filename := "testfile_read_sealed" // Unique file name for testing
+	filename := "testfile_read_active" // Unique file name for testing
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write initial data
 	input1 := []byte("hello")
-	_, _, err = sm.WriteFile(filename, input1, 0)
+	err = sm.WriteFile(filename, input1, 0)
 	require.NoError(t, err, "Write error")
 
 	// Seal the layer
 	err = sm.Checkpoint(filename, "v1")
-	require.NoError(t, err, "Failed to seal layer")
+	require.NoError(t, err, "Failed to commit layer")
 
 	// Write more data
 	input2 := []byte(" world")
-	_, _, err = sm.WriteFile(filename, input2, uint64(len(input1)))
+	err = sm.WriteFile(filename, input2, uint64(len(input1)))
 	require.NoError(t, err, "Write error")
 
 	// Read from first layer
@@ -129,7 +122,7 @@ func TestPartialRead(t *testing.T) {
 
 	filename := "testfile_partial_read" // Unique file name for testing
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
@@ -139,11 +132,11 @@ func TestPartialRead(t *testing.T) {
 	require.Equal(t, 1, len(layers), "Expected one initial layer")
 
 	input := []byte("partial read test")
-	_, offset, err := sm.WriteFile(filename, input, 0)
+	err = sm.WriteFile(filename, input, 0)
 	require.NoError(t, err, "Write error")
 
 	partialSize := uint64(7)
-	data, err := sm.ReadFile(filename, offset, partialSize)
+	data, err := sm.ReadFile(filename, 0, partialSize)
 	require.NoError(t, err, "GetDataRange error")
 
 	assert.Equal(t, int(partialSize), len(data), "Partial read should return requested length")
@@ -156,7 +149,7 @@ func TestInitialLayerCreationOnFileInsert(t *testing.T) {
 
 	filename := "newfile"
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
@@ -164,9 +157,9 @@ func TestInitialLayerCreationOnFileInsert(t *testing.T) {
 	layers, err := sm.LoadLayersByFileID(fileID)
 	require.NoError(t, err, "Failed to load layers for file")
 
-	// Verify that one layer exists and it is unsealed
+	// Verify that one layer exists and it is active
 	require.Equal(t, 1, len(layers), "Expected one initial layer")
-	assert.False(t, layers[0].Sealed, "Initial layer should be unsealed")
+	assert.False(t, layers[0].Active, "Initial layer should be active")
 }
 
 func TestGetDataRangeByFileName(t *testing.T) {
@@ -175,13 +168,13 @@ func TestGetDataRangeByFileName(t *testing.T) {
 
 	filename := "testfile_get_data_range"
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write data to the layer
 	data := []byte("test data for GetDataRange by filename")
-	_, _, err = sm.WriteFile(filename, data, 0)
+	err = sm.WriteFile(filename, data, 0)
 	require.NoError(t, err, "Failed to write data")
 
 	// Read the data using GetDataRange with filename
@@ -206,16 +199,16 @@ func TestStorageManagerPersistence(t *testing.T) {
 
 	// Write some data
 	data1 := []byte("initial data")
-	_, _, err = sm.WriteFile(filename, data1, 0)
+	err = sm.WriteFile(filename, data1, 0)
 	require.NoError(t, err, "Failed to write initial data")
 
 	// Seal the layer to simulate a checkpoint
 	err = sm.Checkpoint(filename, "v1")
-	require.NoError(t, err, "Failed to seal layer")
+	require.NoError(t, err, "Failed to commit layer")
 
 	// Write more data
 	data2 := []byte("more data")
-	_, _, err = sm.WriteFile(filename, data2, uint64(len(data1)))
+	err = sm.WriteFile(filename, data2, uint64(len(data1)))
 	require.NoError(t, err, "Failed to write more data")
 
 	// Verify the data is correct
@@ -239,7 +232,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 
 	// Verify we can still write to the file
 	data3 := []byte("even more data")
-	_, _, err = sm2.WriteFile(filename, data3, uint64(len(data1)+len(data2)))
+	err = sm2.WriteFile(filename, data3, uint64(len(data1)+len(data2)))
 	require.NoError(t, err, "Failed to write additional data")
 
 	// Verify the combined data is correct
@@ -263,7 +256,7 @@ func TestFuseScenario(t *testing.T) {
 
 	// Write some initial data
 	initialData := []byte("initial data for FUSE test")
-	_, _, err = sm.WriteFile(filename, initialData, 0)
+	err = sm.WriteFile(filename, initialData, 0)
 	require.NoError(t, err, "Failed to write initial data")
 
 	// Verify the data
@@ -273,11 +266,11 @@ func TestFuseScenario(t *testing.T) {
 
 	// Simulate a checkpoint
 	err = sm.Checkpoint(filename, "v1")
-	require.NoError(t, err, "Failed to seal layer")
+	require.NoError(t, err, "Failed to commit layer")
 
 	// Write more data
 	additionalData := []byte(" - additional data")
-	_, _, err = sm.WriteFile(filename, additionalData, uint64(len(initialData)))
+	err = sm.WriteFile(filename, additionalData, uint64(len(initialData)))
 	require.NoError(t, err, "Failed to write additional data")
 
 	// Read the combined data
@@ -312,10 +305,10 @@ func TestFailedWriteBeyondFileSize(t *testing.T) {
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write data at different offsets
-	_, _, err = sm.WriteFile(filename, []byte("first"), 0)
+	err = sm.WriteFile(filename, []byte("first"), 0)
 	require.NoError(t, err, "Failed to write 'first'")
 
-	_, _, err = sm.WriteFile(filename, []byte("second"), 10)
+	err = sm.WriteFile(filename, []byte("second"), 10)
 	require.Error(t, err, "Write should fail because it's beyond the file size")
 }
 
@@ -341,7 +334,7 @@ func TestCalculateVirtualFileSize(t *testing.T) {
 
 	// Perform the writes
 	for _, w := range writes {
-		_, _, err := sm.WriteFile(filename, w.data, w.offset)
+		err = sm.WriteFile(filename, w.data, w.offset)
 		require.NoError(t, err, "Failed to write at offset %d", w.offset)
 	}
 
@@ -355,12 +348,12 @@ func TestCalculateVirtualFileSize(t *testing.T) {
 
 	// Seal the layer and write more data at a higher offset
 	err = sm.Checkpoint(filename, "v1")
-	require.NoError(t, err, "Failed to seal layer")
+	require.NoError(t, err, "Failed to commit layer")
 
 	// Write at an even higher offset
 	finalData := []byte("final")
 	finalOffset := uint64(13)
-	_, _, err = sm.WriteFile(filename, finalData, finalOffset)
+	err = sm.WriteFile(filename, finalData, finalOffset)
 	require.NoError(t, err, "Failed to write final data")
 
 	// Get the updated file size
@@ -390,7 +383,7 @@ func TestDeleteFile(t *testing.T) {
 		require.NoError(t, err, "Failed to insert file: %s", filename)
 
 		// Write some data to each file
-		_, _, err = sm.WriteFile(filename, []byte("data for "+filename), 0)
+		err = sm.WriteFile(filename, []byte("data for "+filename), 0)
 		require.NoError(t, err, "Failed to write to file: %s", filename)
 	}
 
@@ -436,7 +429,7 @@ func TestDeleteFile(t *testing.T) {
 	assert.Error(t, err, "Reading from deleted file should return an error")
 
 	// Try to write to the deleted file
-	_, _, err = sm.WriteFile(filenames[1], []byte("new data"), 0)
+	err = sm.WriteFile(filenames[1], []byte("new data"), 0)
 	assert.Error(t, err, "Writing to deleted file should return an error")
 }
 
@@ -446,7 +439,7 @@ func TestExampleWorkflow(t *testing.T) {
 
 	filename := "testfile_example_workflow"
 
-	// Insert the file, which should create an initial unsealed layer
+	// Insert the file, which should create an initial active layer
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
@@ -457,20 +450,18 @@ func TestExampleWorkflow(t *testing.T) {
 
 	// Write initial data.
 	data1 := []byte("Hello, checkpoint!")
-	_, offset1, err := sm.WriteFile(filename, data1, 0)
+	err = sm.WriteFile(filename, data1, 0)
 	require.NoError(t, err, "Failed to write initial data")
-	assert.Equal(t, uint64(0), offset1, "First write offset should be 0")
 
 	// Simulate a checkpoint using our test instance.
 	err = sm.Checkpoint(filename, "v1")
-	require.NoError(t, err, "Failed to seal layer")
+	require.NoError(t, err, "Failed to commit layer")
 
 	// Write additional data.
 	data2 := []byte("More data after checkpoint.")
 	expectedOffset2 := uint64(len(data1))
-	_, offset2, err := sm.WriteFile(filename, data2, expectedOffset2)
+	err = sm.WriteFile(filename, data2, expectedOffset2)
 	require.NoError(t, err, "Failed to write additional data")
-	assert.Equal(t, expectedOffset2, offset2, "Second write offset should match data1 length")
 
 	// The full file content should be the concatenation of data1 and data2.
 	expectedContent := append(data1, data2...)
@@ -493,7 +484,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 
 	// Write initial data
 	initialData := []byte("initial data")
-	_, _, err = sm.WriteFile(filename, initialData, 0)
+	err = sm.WriteFile(filename, initialData, 0)
 	require.NoError(t, err, "Failed to write initial data")
 
 	// Verify the initial data was written correctly
@@ -503,7 +494,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 
 	// Write new data to the same offset
 	newData := []byte("overwritten!")
-	_, _, err = sm.WriteFile(filename, newData, 0)
+	err = sm.WriteFile(filename, newData, 0)
 	require.NoError(t, err, "Failed to write new data to the same offset")
 
 	// Verify the new data overwrote the initial data
@@ -521,7 +512,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 	// Write data that partially overlaps with existing data
 	partialData := []byte("partial")
 	partialOffset := uint64(5) // This will overlap with part of the existing data
-	_, _, err = sm.WriteFile(filename, partialData, partialOffset)
+	err = sm.WriteFile(filename, partialData, partialOffset)
 	require.NoError(t, err, "Failed to write partially overlapping data")
 
 	// Expected content after partial write
@@ -555,7 +546,7 @@ func TestTruncateFile(t *testing.T) {
 
 	// Write initial content
 	initialContent := []byte("Hello, this is a test file for truncation.")
-	_, _, err = sm.WriteFile(filename, initialContent, 0)
+	err = sm.WriteFile(filename, initialContent, 0)
 	require.NoError(t, err, "Failed to write initial content")
 
 	// Verify initial content and size
@@ -608,7 +599,7 @@ func TestTruncateToSameSize(t *testing.T) {
 
 	// Write initial content
 	initialContent := []byte("Hello, world!")
-	_, _, err = sm.WriteFile(filename, initialContent, 0)
+	err = sm.WriteFile(filename, initialContent, 0)
 	require.NoError(t, err, "Failed to write initial content")
 
 	// Get initial size
@@ -650,7 +641,7 @@ func TestTruncateToSmallerSize(t *testing.T) {
 
 	// Write initial content
 	initialContent := []byte("Hello, world!")
-	_, _, err = sm.WriteFile(filename, initialContent, 0)
+	err = sm.WriteFile(filename, initialContent, 0)
 	require.NoError(t, err, "Failed to write initial content")
 
 	// Truncate to a smaller size
@@ -671,7 +662,7 @@ func TestVersionedLayers(t *testing.T) {
 
 	// Write some initial data
 	initialData := []byte("initial data")
-	_, _, err = sm.WriteFile(filename, initialData, 0)
+	err = sm.WriteFile(filename, initialData, 0)
 	require.NoError(t, err, "Failed to write initial data")
 
 	// Checkpoint with version tag "v1"
@@ -681,7 +672,7 @@ func TestVersionedLayers(t *testing.T) {
 
 	// Write more data
 	additionalData := []byte(" - additional data")
-	_, _, err = sm.WriteFile(filename, additionalData, uint64(len(initialData)))
+	err = sm.WriteFile(filename, additionalData, uint64(len(initialData)))
 	require.NoError(t, err, "Failed to write additional data")
 
 	// Checkpoint with version tag "v2"
@@ -694,12 +685,12 @@ func TestVersionedLayers(t *testing.T) {
 	require.NoError(t, err, "Failed to load layers for file")
 	require.Equal(t, 3, len(layers), "Expected three layers (initial, v1, v2)")
 
-	// Get version IDs
-	versionID1, err := sm.GetVersionIDByTag(versionTag1)
-	require.NoError(t, err, "Failed to get version ID for tag v1")
+	db := difffstest.SetupDB(t)
+	defer db.Close()
 
-	versionID2, err := sm.GetVersionIDByTag(versionTag2)
-	require.NoError(t, err, "Failed to get version ID for tag v2")
+	// Get version IDs
+	versionID1 := getVersionIDByTag(t, db, versionTag1)
+	versionID2 := getVersionIDByTag(t, db, versionTag2)
 
 	// Print actual values for debugging
 	t.Logf("Layer 0 version ID: %d", layers[0].VersionID)
@@ -719,12 +710,10 @@ func TestVersionedLayers(t *testing.T) {
 	assert.Equal(t, "", layers[2].Tag, "Third layer should have no version (active layer)")
 
 	// Verify that we can retrieve version tags by ID
-	tag1, err := sm.GetVersionTagByID(versionID1)
-	require.NoError(t, err, "Failed to get version tag for ID")
+	tag1 := getVersionTagByID(t, db, versionID1)
 	assert.Equal(t, versionTag1, tag1, "Retrieved tag should match original tag")
 
-	tag2, err := sm.GetVersionTagByID(versionID2)
-	require.NoError(t, err, "Failed to get version tag for ID")
+	tag2 := getVersionTagByID(t, db, versionID2)
 	assert.Equal(t, versionTag2, tag2, "Retrieved tag should match original tag")
 }
 
@@ -739,7 +728,7 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 
 	// Write initial content
 	initialContent := []byte("***************")
-	_, _, err = sm.WriteFile(filename, initialContent, 0)
+	err = sm.WriteFile(filename, initialContent, 0)
 	require.NoError(t, err, "Failed to write initial content")
 
 	// Create version v1
@@ -749,7 +738,7 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 
 	// Write more content
 	updatedContent := []byte("---------------")
-	_, _, err = sm.WriteFile(filename, updatedContent, 0)
+	err = sm.WriteFile(filename, updatedContent, 0)
 	require.NoError(t, err, "Failed to write updated content")
 
 	// Create version v2
@@ -759,7 +748,7 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 
 	// Write final content
 	finalContent := []byte("@@@@@@@@@@@@@@@")
-	_, _, err = sm.WriteFile(filename, finalContent, 0)
+	err = sm.WriteFile(filename, finalContent, 0)
 	require.NoError(t, err, "Failed to write final content")
 
 	// Test reading with version v1
@@ -782,4 +771,32 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 	_, err = sm.ReadFile(filename, 0, 100, storage.WithVersionTag("non_existent_version"))
 	assert.Error(t, err, "Expected error when reading with non-existent version")
 	assert.Contains(t, err.Error(), "version tag not found", "Error should indicate version tag not found")
+}
+
+func getVersionIDByTag(t *testing.T, db *sql.DB, tag string) int64 {
+	query := `SELECT id FROM versions WHERE tag = $1;`
+	var versionID int64
+	err := db.QueryRow(query, tag).Scan(&versionID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0
+		}
+		t.Fatalf("Failed to get version ID for tag %s: %v", tag, err)
+	}
+
+	return versionID
+}
+
+func getVersionTagByID(t *testing.T, db *sql.DB, id int64) string {
+	query := `SELECT tag FROM versions WHERE id = $1;`
+	var tag string
+	err := db.QueryRow(query, id).Scan(&tag)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ""
+		}
+		t.Fatalf("Failed to get version tag for ID %d: %v", id, err)
+	}
+
+	return tag
 }

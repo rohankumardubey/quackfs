@@ -21,20 +21,17 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 	// Create a test log
 	log := logger.New(os.Stderr)
 
-	sm, err := storage.NewManager(db, log)
-	if err != nil {
-		t.Fatalf("Failed to create PostgreSQL storage manager: %v", err)
-	}
+	sm := storage.NewManager(db, log)
 
 	cleanup := func() {
 		// delete all rows in all tables
-		_, err = db.Exec("DELETE FROM entries")
+		_, err = db.Exec("DELETE FROM chunks")
 		if err != nil {
-			t.Fatalf("Failed to clean entries table: %v", err)
+			t.Fatalf("Failed to clean chunks table: %v", err)
 		}
-		_, err = db.Exec("DELETE FROM layers")
+		_, err = db.Exec("DELETE FROM snapshot_layers")
 		if err != nil {
-			t.Fatalf("Failed to clean layers table: %v", err)
+			t.Fatalf("Failed to clean snapshot_layers table: %v", err)
 		}
 		_, err = db.Exec("DELETE FROM files")
 		if err != nil {
@@ -53,4 +50,13 @@ func GetTestConnectionString(t *testing.T) string {
 		t.Fatal("PostgreSQL connection string not provided. Set POSTGRES_TEST_CONN environment variable")
 	}
 	return connStr
+}
+
+func SetupDB(t *testing.T) *sql.DB {
+	connStr := GetTestConnectionString(t)
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		t.Fatalf("Failed to open database connection: %v", err)
+	}
+	return db
 }

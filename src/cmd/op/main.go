@@ -34,10 +34,7 @@ func main() {
 	defer db.Close()
 
 	// Create a storage manager
-	sm, err := storage.NewManager(db, log)
-	if err != nil {
-		log.Fatal("Failed to create storage manager", "error", err)
-	}
+	sm := storage.NewManager(db, log)
 	defer sm.Close()
 
 	// Execute the appropriate command
@@ -141,7 +138,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 			// Fill the gap with null bytes if needed
 			if gapSize > 0 {
 				nullBytes := make([]byte, gapSize)
-				_, _, err := sm.WriteFile(*fileName, nullBytes, fileSize)
+				err := sm.WriteFile(*fileName, nullBytes, fileSize)
 				if err != nil {
 					log.Fatal("Failed to fill gap with null bytes", "error", err)
 				}
@@ -152,7 +149,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 
 	// Write the data to the file at the specified offset
 	dataBytes := []byte(*data)
-	layerID, writtenOffset, err := sm.WriteFile(*fileName, dataBytes, *offset)
+	err = sm.WriteFile(*fileName, dataBytes, *offset)
 	if err != nil {
 		log.Fatal("Failed to write data", "error", err)
 	}
@@ -160,9 +157,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 	log.Info("Data written successfully",
 		"fileName", *fileName,
 		"offset", *offset,
-		"dataSize", len(dataBytes),
-		"layerID", layerID,
-		"writtenOffset", writtenOffset)
+		"dataSize", len(dataBytes))
 
 	fmt.Printf("Successfully wrote %d bytes to %s at offset %d\n", len(dataBytes), *fileName, *offset)
 }
@@ -172,7 +167,7 @@ func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
 	// Define command-line flags for checkpoint command
 	checkpointCmd := flag.NewFlagSet("checkpoint", flag.ExitOnError)
 	fileName := checkpointCmd.String("file", "", "Target file to checkpoint")
-	version := checkpointCmd.String("version", "", "Version tag to associate with the sealed layer")
+	version := checkpointCmd.String("version", "", "Version tag to associate with the active snapshot layer")
 
 	// Parse the flags
 	checkpointCmd.Parse(os.Args[1:])
