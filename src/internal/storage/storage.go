@@ -54,10 +54,6 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return fmt.Errorf("failed to get file ID: %w", err)
 	}
-	if fileID == 0 {
-		sm.log.Error("File not found", "filename", filename)
-		return fmt.Errorf("file not found")
-	}
 
 	// Get the active layer
 	query := `SELECT id FROM snapshot_layers WHERE file_id = $1 AND active = 1 ORDER BY id ASC LIMIT 1;`
@@ -118,27 +114,15 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 func (sm *Manager) calculateRanges(layerID int64, offset uint64, dataSize int) ([2]uint64, [2]uint64, error) {
 	dataLength := uint64(dataSize)
 
-	// Retrieve the layer base from the metadata store.
-	lowestOffset, err := sm.GetLowestFileOffsetOf(layerID)
+	layerSize, err := sm.calcLayerSize(layerID)
 	if err != nil {
-		if err == ErrNotFound {
-			lowestOffset = 0
-		} else {
-			sm.log.Error("Failed to retrieve layer base", "layerID", layerID, "error", err)
-			return [2]uint64{}, [2]uint64{}, fmt.Errorf("failed to retrieve layer base: %w", err)
-		}
+		return [2]uint64{}, [2]uint64{}, fmt.Errorf("failed to retrieve layer size: %w", err)
 	}
 
-	var layerStart uint64
-	if offset >= lowestOffset {
-		layerStart = offset - lowestOffset
-	} else {
-		layerStart = 0
-	}
+	layerStart := layerSize
 	layerEnd := layerStart + dataLength
 	layerRange := [2]uint64{layerStart, layerEnd}
 
-	// File range remains the global offset range.
 	fileStart := offset
 	fileEnd := offset + dataLength
 	fileRange := [2]uint64{fileStart, fileEnd}
@@ -398,28 +382,28 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	return result, nil
 }
 
-// GetLowestFileOffsetOf returns the offset of the first file chunk in the layer
-func (sm *Manager) GetLowestFileOffsetOf(layerID int64) (uint64, error) {
+func (sm *Manager) calcLayerSize(layerID int64) (uint64, error) {
 	query := `
-		SELECT lower(file_range)::bigint AS offset
+		SELECT upper(layer_range)::bigint AS size
 		FROM chunks
 		WHERE snapshot_layer_id = $1
-		ORDER BY lower(file_range) ASC
+		ORDER BY upper(layer_range) DESC
 		LIMIT 1;
 	`
 
-	var off sql.NullInt64
-	err := sm.db.QueryRow(query, layerID).Scan(&off)
+	var size sql.NullInt64
+	err := sm.db.QueryRow(query, layerID).Scan(&size)
 	if err != nil {
+		// if the layer has no chunks, its size is 0
 		if err == sql.ErrNoRows {
-			return 0, ErrNotFound
+			return 0, nil
 		}
 		return 0, err
 	}
-	if !off.Valid {
+	if !size.Valid {
 		return 0, fmt.Errorf("invalid base value for layer %d", layerID)
 	}
-	return uint64(off.Int64), nil
+	return uint64(size.Int64), nil
 }
 
 // chunk holds data for a write chunk.

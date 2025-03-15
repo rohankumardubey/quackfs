@@ -1,3 +1,5 @@
+CREATE EXTENSION btree_gist;
+
 -- Create files table
 CREATE TABLE IF NOT EXISTS files (
     id SERIAL PRIMARY KEY,
@@ -28,5 +30,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     offset_value BIGINT NOT NULL,
     data BYTEA NOT NULL,
     layer_range INT8RANGE NOT NULL,
-    file_range INT8RANGE NOT NULL
+    file_range INT8RANGE NOT NULL,
+    -- for any given snapshot_layer_id, there should be no overlapping layer_ranges
+    EXCLUDE USING GIST (snapshot_layer_id WITH =, layer_range WITH &&)
 ); 
