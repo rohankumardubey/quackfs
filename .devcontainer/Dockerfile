@@ -58,7 +58,7 @@ RUN apt-get update \
 
 # Verify expected build and debug tools are present
 RUN apt-get update \
-    && apt-get -y install build-essential cmake cppcheck valgrind clang lldb llvm gdb \
+    && apt-get -y install build-essential cmake cppcheck valgrind clang lldb llvm gdb wget \
     # Install tools and shells not in common script
     && apt-get install -yq vim vim-doc xtail software-properties-common libsecret-1-dev \
     # Install FUSE lib which is need for this project
@@ -70,8 +70,8 @@ RUN apt-get update \
     && mv -f /tmp/scripts/first-run-notice.txt /usr/local/etc/vscode-dev-containers/
 
 # Install DuckDB
-RUN curl https://install.duckdb.org | sh
-RUN echo "export PATH='/home/codespace/.duckdb/cli/latest':$PATH" >> /home/codespace/.zshrc
+RUN wget -O /tmp/duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.2.1/duckdb_cli-linux-aarch64.zip
+RUN unzip -o /tmp/duckdb.zip -d /usr/local/bin/
 
 # Default to bash shell (other shells available at /usr/bin/fish and /usr/bin/zsh)
 ENV SHELL=/bin/zsh \

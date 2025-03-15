@@ -1,4 +1,4 @@
-CREATE TABLE test (id INTEGER, data TEXT);
+CREATE TABLE IF NOT EXISTS test (id INTEGER, data TEXT);
 
 -- Initial data insertion
 INSERT INTO test (id, data) VALUES (1, 'data1'), (2, 'data2');
