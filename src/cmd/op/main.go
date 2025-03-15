@@ -113,7 +113,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 	// Get current file size
 	fileSize := uint64(0)
 	if fileID != 0 {
-		fileSize, err = sm.FileSize(fileID)
+		fileSize, err = sm.SizeOf(*fileName)
 		if err != nil {
 			log.Fatal("Failed to get file size", "error", err)
 		}
@@ -241,7 +241,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	}
 
 	// Get file size to determine how much to read if size is not specified
-	fileSize, err := sm.FileSize(fileID)
+	fileSize, err := sm.SizeOf(*fileName)
 	if err != nil {
 		log.Fatal("Failed to get file size", "error", err)
 	}
@@ -262,7 +262,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 			"size", readSize,
 			"version", *version)
 
-		data, err = sm.ReadFile(*fileName, *offset, readSize, storage.WithVersionTag(*version))
+		data, err = sm.ReadFile(*fileName, *offset, readSize, storage.WithVersion(*version))
 		if err != nil {
 			log.Fatal("Failed to read data with version", "error", err)
 		}

@@ -30,7 +30,7 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	require.NoError(t, err, "Write error")
 
 	// Get the file size to read the entire content
-	fileSize, err := sm.FileSize(fileID)
+	fileSize, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent, err := sm.ReadFile(filename, 0, fileSize)
 	require.NoError(t, err, "Failed to get full content")
@@ -194,7 +194,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 
 	// Create a test file
 	filename := "testfile_persistence"
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write some data
@@ -212,7 +212,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 	require.NoError(t, err, "Failed to write more data")
 
 	// Verify the data is correct
-	fileSize, err := sm.FileSize(fileID)
+	fileSize, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent, err := sm.ReadFile(filename, 0, fileSize)
 	require.NoError(t, err, "Failed to get full content")
@@ -224,7 +224,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 	defer cleanup2()
 
 	// Verify the data is still correct
-	fileSize2, err := sm2.FileSize(fileID)
+	fileSize2, err := sm2.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent2, err := sm2.ReadFile(filename, 0, fileSize2)
 	require.NoError(t, err, "Failed to get full content")
@@ -236,7 +236,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 	require.NoError(t, err, "Failed to write additional data")
 
 	// Verify the combined data is correct
-	fileSize3, err := sm2.FileSize(fileID)
+	fileSize3, err := sm2.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent3, err := sm2.ReadFile(filename, 0, fileSize3)
 	require.NoError(t, err, "Failed to get full content")
@@ -251,7 +251,7 @@ func TestFuseScenario(t *testing.T) {
 
 	// Create a test file
 	filename := "testfile_fuse_scenario"
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write some initial data
@@ -280,7 +280,7 @@ func TestFuseScenario(t *testing.T) {
 	assert.Equal(t, combinedData, readCombined, "Combined data should match expected")
 
 	// Verify file size
-	size, err := sm.FileSize(fileID)
+	size, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	assert.Equal(t, uint64(len(combinedData)), size, "File size should match combined data length")
 
@@ -324,7 +324,7 @@ func TestCalculateVirtualFileSize(t *testing.T) {
 
 	// Create a test file
 	filename := "testfile_virtual_size"
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write data at different offsets to create gaps
@@ -344,7 +344,7 @@ func TestCalculateVirtualFileSize(t *testing.T) {
 	}
 
 	// Get the file size
-	size, err := sm.FileSize(fileID)
+	size, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 
 	// The size should be the highest offset + length of data at that offset
@@ -362,7 +362,7 @@ func TestCalculateVirtualFileSize(t *testing.T) {
 	require.NoError(t, err, "Failed to write final data")
 
 	// Get the updated file size
-	newSize, err := sm.FileSize(fileID)
+	newSize, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get updated file size")
 
 	// The size should now be the new highest offset + length of data at that offset
@@ -470,7 +470,7 @@ func TestExampleWorkflow(t *testing.T) {
 
 	// The full file content should be the concatenation of data1 and data2.
 	expectedContent := append(data1, data2...)
-	fileSize, err := sm.FileSize(fileID)
+	fileSize, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent, err := sm.ReadFile(filename, 0, fileSize)
 	require.NoError(t, err, "Failed to get full content")
@@ -484,7 +484,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 
 	// Create a test file
 	filename := "testfile_write_same_offset"
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
 	// Write initial data
@@ -508,7 +508,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 	assert.Equal(t, newData, readNewData, "New data should overwrite initial data at the same offset")
 
 	// Check the full content of the file
-	fileSize, err := sm.FileSize(fileID)
+	fileSize, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent, err := sm.ReadFile(filename, 0, fileSize)
 	require.NoError(t, err, "Failed to get full content")
@@ -524,7 +524,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 	expectedContent := make([]byte, len(newData))
 	copy(expectedContent, newData)
 	// Overwrite the portion that should be replaced by partialData
-	for i := 0; i < len(partialData); i++ {
+	for i := range len(partialData) {
 		if int(partialOffset)+i < len(expectedContent) {
 			expectedContent[partialOffset+uint64(i)] = partialData[i]
 		} else {
@@ -641,12 +641,12 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 	require.NoError(t, err, "Failed to write final content")
 
 	// Test reading with version v1
-	v1Content, err := sm.ReadFile(filename, 0, 100, storage.WithVersionTag(v1Tag))
+	v1Content, err := sm.ReadFile(filename, 0, 100, storage.WithVersion(v1Tag))
 	require.NoError(t, err, "Failed to read content with version v1")
 	assert.Equal(t, string(v1Content), string(initialContent), "Expected content for version v1 to be %q, got %q", initialContent, v1Content)
 
 	// Test reading with version v2
-	v2Content, err := sm.ReadFile(filename, 0, 100, storage.WithVersionTag(v2Tag))
+	v2Content, err := sm.ReadFile(filename, 0, 100, storage.WithVersion(v2Tag))
 	require.NoError(t, err, "Failed to read content with version v2")
 	assert.Equal(t, string(v2Content), string(updatedContent), "Expected content for version v2 to be %q, got %q", updatedContent, v2Content)
 
@@ -657,7 +657,7 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 	assert.Equal(t, string(latestContent), string(finalContent), "Expected latest content to be %q, got %q", finalContent, latestContent)
 
 	// Test reading with non-existent version
-	_, err = sm.ReadFile(filename, 0, 100, storage.WithVersionTag("non_existent_version"))
+	_, err = sm.ReadFile(filename, 0, 100, storage.WithVersion("non_existent_version"))
 	assert.Error(t, err, "Expected error when reading with non-existent version")
 	assert.Contains(t, err.Error(), "version tag not found", "Error should indicate version tag not found")
 }

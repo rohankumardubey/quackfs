@@ -2,6 +2,7 @@ package fsx
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,9 +94,8 @@ func TestFuseFileRemoval(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "Error should indicate file does not exist")
 
 	// Verify the file was removed from the database
-	fileID, err := sm.GetFileIDByName(testFileName)
-	require.NoError(t, err, "Error checking file ID")
-	require.Equal(t, int64(0), fileID, "File ID should be 0 (not found) after removal")
+	_, err = sm.GetFileIDByName(testFileName)
+	require.True(t, errors.Is(err, storage.ErrNotFound), "Error should indicate file does not exist")
 
 	// Check for any errors from the FUSE server
 	select {
@@ -209,7 +209,7 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(beyondData), resp.Size)
 
-	fileSize, err := sm.FileSize(fileID)
+	fileSize, err := sm.SizeOf(filename)
 	require.NoError(t, err)
 
 	// Read the entire file to verify the content

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"syscall"
 	"time"
 
 	"bazil.org/fuse"
@@ -65,16 +66,12 @@ func (dir Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 func (dir Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	dir.log.Debug("Looking up file", "name", name)
 
-	// Check if the file exists in our database
-	fileID, err := dir.sm.GetFileIDByName(name)
-	if err != nil || fileID == 0 {
-		dir.log.Debug("File not found in database", "name", name)
-		return nil, fuse.ENOENT
-	}
-
 	// Get file size
-	size, err := dir.sm.FileSize(fileID)
+	size, err := dir.sm.SizeOf(name)
 	if err != nil {
+		if err == storage.ErrNotFound {
+			return nil, syscall.ENOENT
+		}
 		return nil, err
 	}
 
@@ -119,7 +116,7 @@ func (dir Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	// For directories, we would check req.Dir, but we don't support directory removal yet
 	if req.Dir {
 		dir.log.Warn("Directory removal not supported", "name", req.Name)
-		return fuse.ENOSYS // Operation not supported
+		return syscall.ENOSYS // Operation not supported
 	}
 
 	// For files, we need to delete the file from our database
@@ -186,14 +183,7 @@ var _ fs.NodeSetattrer = (*File)(nil)
 func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	f.log.Debug("Getting file attributes", "name", f.name)
 
-	// Get file metadata from the database
-	fileID, err := f.sm.GetFileIDByName(f.name)
-	if err != nil {
-		f.log.Error("Failed to get file ID", "name", f.name, "error", err)
-		return err
-	}
-
-	size, err := f.sm.FileSize(fileID)
+	size, err := f.sm.SizeOf(f.name)
 	if err != nil {
 		f.log.Error("Failed to get file size", "name", f.name, "error", err)
 		return err
@@ -308,7 +298,7 @@ func (f *File) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) er
 
 func (f *File) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
 	f.log.Debug("Reading symlink", "name", f.name)
-	return "", fuse.EIO
+	return "", syscall.EIO
 }
 
 func (f *File) Remove(ctx context.Context, req *fuse.RemoveRequest) error {

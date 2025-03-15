@@ -2,32 +2,24 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/charmbracelet/log"
 )
 
-type SnapshotLayer struct {
-	ID        int64
+type snapshotLayer struct {
+	id        int64
 	FileID    int64
 	Active    bool // whether of not it is the current active layer that is being written to
 	VersionID int64
 	Tag       string
-	chunks    map[uint64][]byte
 }
 
-func newSnapshotLayer(fileID int64) *SnapshotLayer {
-	return &SnapshotLayer{
-		FileID:    fileID,
-		Active:    false,
-		VersionID: 0,
-		chunks:    make(map[uint64][]byte),
-	}
-}
+var ErrNotFound = errors.New("not found")
 
 type Manager struct {
 	mu  sync.RWMutex // Primary mutex for protecting all shared state
@@ -76,7 +68,7 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 		return fmt.Errorf("failed to query active layer: %w", err)
 	}
 
-	fileSize, err := sm.calcFileSize(fileID)
+	fileSize, err := sm.calcSizeOf(fileID)
 	if err != nil {
 		sm.log.Error("Failed to calculate file size", "fileID", fileID, "error", err)
 		return fmt.Errorf("failed to calculate file size: %w", err)
@@ -127,15 +119,19 @@ func (sm *Manager) calculateRanges(layerID int64, offset uint64, dataSize int) (
 	dataLength := uint64(dataSize)
 
 	// Retrieve the layer base from the metadata store.
-	baseOffset, err := sm.GetLayerBase(layerID)
+	lowestOffset, err := sm.GetLowestFileOffsetOf(layerID)
 	if err != nil {
-		sm.log.Error("Failed to retrieve layer base", "layerID", layerID, "error", err)
-		return [2]uint64{}, [2]uint64{}, fmt.Errorf("failed to retrieve layer base: %w", err)
+		if err == ErrNotFound {
+			lowestOffset = 0
+		} else {
+			sm.log.Error("Failed to retrieve layer base", "layerID", layerID, "error", err)
+			return [2]uint64{}, [2]uint64{}, fmt.Errorf("failed to retrieve layer base: %w", err)
+		}
 	}
 
 	var layerStart uint64
-	if offset >= baseOffset {
-		layerStart = offset - baseOffset
+	if offset >= lowestOffset {
+		layerStart = offset - lowestOffset
 	} else {
 		layerStart = 0
 	}
@@ -155,33 +151,38 @@ func (sm *Manager) calculateRanges(layerID int64, offset uint64, dataSize int) (
 	return layerRange, fileRange, nil
 }
 
-func (sm *Manager) FileSize(id int64) (uint64, error) {
+func (sm *Manager) SizeOf(filename string) (uint64, error) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	return sm.calcFileSize(id)
+	fileID, err := sm.GetFileIDByName(filename)
+	if err != nil {
+		return 0, err
+	}
+
+	return sm.calcSizeOf(fileID)
 }
 
-// ReadFileOption defines functional options for GetDataRange
-type ReadFileOption func(*readFileOptions)
+// readFileOpt defines functional options for GetDataRange
+type readFileOpt func(*readFileOpts)
 
-// readFileOptions holds all options for GetDataRange
-type readFileOptions struct {
+// readFileOpts holds all options for GetDataRange
+type readFileOpts struct {
 	version string
 }
 
-// WithVersionTag specifies a version tag to retrieve data up to
-func WithVersionTag(version string) ReadFileOption {
-	return func(opts *readFileOptions) {
-		opts.version = version
+// WithVersion specifies a version tag to retrieve data up to
+func WithVersion(v string) readFileOpt {
+	return func(opts *readFileOpts) {
+		opts.version = v
 	}
 }
 
 // ReadFile returns a slice of data from the given offset up to size bytes.
 // Optional version tag can be specified to retrieve data up to a specific version.
-func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ...ReadFileOption) ([]byte, error) {
+func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ...readFileOpt) ([]byte, error) {
 	// Process options
-	options := readFileOptions{}
+	options := readFileOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -215,7 +216,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		return nil, fmt.Errorf("failed to get file ID: %w", err)
 	}
 
-	var layers []*SnapshotLayer
+	var layers []*snapshotLayer
 
 	// check if there's a layer for this file with the given version tag
 	if hasVersion {
@@ -272,7 +273,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	defer rows.Close()
 
 	// Map to store chunks by layer ID
-	chunksMap := make(map[int64][]Chunk)
+	chunksMap := make(map[int64][]chunk)
 
 	// Track the maximum size needed for the buffer
 	var maxSize uint64 = 0
@@ -292,56 +293,43 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		// Parse layer range
 		layerRange := [2]uint64{0, 0}
 		if layerRangeStr.Valid {
-			parts := strings.Split(strings.Trim(layerRangeStr.String, "[)"), ",")
-			if len(parts) == 2 {
-				start, err := strconv.ParseUint(parts[0], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing layer range start", "value", parts[0], "error", err)
-					return nil, err
-				}
-				end, err := strconv.ParseUint(parts[1], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing layer range end", "value", parts[1], "error", err)
-					return nil, err
-				}
-				layerRange[0] = start
-				layerRange[1] = end
+			start, end, err := parseRange(layerRangeStr.String)
+			if err != nil {
+				return nil, err
 			}
+
+			layerRange[0] = start
+			layerRange[1] = end
+		} else {
+			return nil, fmt.Errorf("invalid layer range")
 		}
 
 		// Parse file range
 		fileRange := [2]uint64{0, 0}
 		if fileRangeStr.Valid {
-			parts := strings.Split(strings.Trim(fileRangeStr.String, "[)"), ",")
-			if len(parts) == 2 {
-				start, err := strconv.ParseUint(parts[0], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing file range start", "value", parts[0], "error", err)
-					return nil, err
-				}
-				end, err := strconv.ParseUint(parts[1], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing file range end", "value", parts[1], "error", err)
-					return nil, err
-				}
-				fileRange[0] = start
-				fileRange[1] = end
+			start, end, err := parseRange(fileRangeStr.String)
+			if err != nil {
+				return nil, err
 			}
+			fileRange[0] = start
+			fileRange[1] = end
+		} else {
+			return nil, fmt.Errorf("invalid layer range")
 		}
 
 		// Create chunk and add to map
-		chunk := Chunk{
-			LayerID:    layerID,
-			Offset:     offset,
-			Data:       data,
-			LayerRange: layerRange,
-			FileRange:  fileRange,
+		chunk := chunk{
+			layerID:    layerID,
+			off:        offset,
+			data:       data,
+			layerRange: layerRange,
+			fileRange:  fileRange,
 		}
 
 		// Check if this layer is in our filtered layers
 		layerIncluded := false
 		for _, layer := range layers {
-			if layer.ID == layerID {
+			if layer.id == layerID {
 				layerIncluded = true
 				break
 			}
@@ -364,18 +352,18 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	// Apply chunks in the correct order
 	// For each layer (in order from oldest to newest)
 	for _, layer := range layers {
-		if chunks, ok := chunksMap[layer.ID]; ok {
+		if chunks, ok := chunksMap[layer.id]; ok {
 			// For each chunk in this layer
 			for _, chunk := range chunks {
 				// Copy the chunk data to the buffer at the appropriate offset
-				end := chunk.Offset + uint64(len(chunk.Data))
+				end := chunk.off + uint64(len(chunk.data))
 				if end <= uint64(len(buf)) {
-					copy(buf[chunk.Offset:end], chunk.Data)
+					copy(buf[chunk.off:end], chunk.data)
 				} else {
 					// Handle case where chunk extends beyond current buffer
 					newBuf := make([]byte, end)
 					copy(newBuf, buf)
-					copy(newBuf[chunk.Offset:], chunk.Data)
+					copy(newBuf[chunk.off:], chunk.data)
 					buf = newBuf
 				}
 			}
@@ -410,54 +398,46 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	return result, nil
 }
 
-// GetLayerBase returns the chunk with lowest start file offset for a given layer.
-func (sm *Manager) GetLayerBase(layerID int64) (uint64, error) {
+// GetLowestFileOffsetOf returns the offset of the first file chunk in the layer
+func (sm *Manager) GetLowestFileOffsetOf(layerID int64) (uint64, error) {
 	query := `
-		SELECT lower(file_range)::bigint
+		SELECT lower(file_range)::bigint AS offset
 		FROM chunks
 		WHERE snapshot_layer_id = $1
 		ORDER BY lower(file_range) ASC
 		LIMIT 1;
 	`
 
-	var base sql.NullInt64
-	err := sm.db.QueryRow(query, layerID).Scan(&base)
+	var off sql.NullInt64
+	err := sm.db.QueryRow(query, layerID).Scan(&off)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return 0, nil // base will be 0
+			return 0, ErrNotFound
 		}
 		return 0, err
 	}
-	if !base.Valid {
+	if !off.Valid {
 		return 0, fmt.Errorf("invalid base value for layer %d", layerID)
 	}
-	return uint64(base.Int64), nil
+	return uint64(off.Int64), nil
 }
 
-// LayerMetadata holds metadata for a layer.
-type LayerMetadata struct {
-	ID        int
-	Base      int64
-	CreatedAt time.Time
-	Active    bool
-}
-
-// Chunk holds data for a write chunk.
-type Chunk struct {
-	LayerID    int64
-	Offset     uint64
-	Data       []byte
-	LayerRange [2]uint64 // Range within a layer as an array of two integers
-	FileRange  [2]uint64 // Range within the virtual file as an array of two integers
+// chunk holds data for a write chunk.
+type chunk struct {
+	layerID    int64
+	off        uint64
+	data       []byte
+	layerRange [2]uint64 // Range within a layer as an array of two integers
+	fileRange  [2]uint64 // Range within the virtual file as an array of two integers
 }
 
 // insertActiveLayer inserts a new layer record, making it the active layer for the file.
 // It accepts optional functional parameters for configuration.
-func (sm *Manager) insertActiveLayer(layer *SnapshotLayer, opts ...queryOption) (int64, error) {
-	sm.log.Debug("Recording new layer in metadata store", "layerID", layer.ID)
+func (sm *Manager) insertActiveLayer(layer *snapshotLayer, opts ...queryOpt) (int64, error) {
+	sm.log.Debug("Recording new layer in metadata store", "layerID", layer.id)
 
 	// Process options
-	options := queryOptions{}
+	options := queryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -475,11 +455,11 @@ func (sm *Manager) insertActiveLayer(layer *SnapshotLayer, opts ...queryOption) 
 	}
 
 	if err != nil {
-		sm.log.Error("Failed to record new layer", "layerID", layer.ID, "error", err)
+		sm.log.Error("Failed to record new layer", "layerID", layer.id, "error", err)
 		return 0, err
 	}
 
-	layer.ID = newID
+	layer.id = newID
 
 	sm.log.Debug("Layer recorded successfully", "layerID", newID)
 	return newID, nil
@@ -498,7 +478,7 @@ func (sm *Manager) InsertFile(name string) (int64, error) {
 	}
 
 	// After inserting the file, create an initial active layer for it
-	layer := newSnapshotLayer(fileID)
+	layer := &snapshotLayer{FileID: fileID}
 	_, err = sm.insertActiveLayer(layer)
 	if err != nil {
 		sm.log.Error("Failed to create initial layer for new file", "fileID", fileID, "error", err)
@@ -509,23 +489,23 @@ func (sm *Manager) InsertFile(name string) (int64, error) {
 	return fileID, nil
 }
 
-type queryOption func(*queryOptions)
+type queryOpt func(*queryOpts)
 
-type queryOptions struct {
+type queryOpts struct {
 	tx *sql.Tx
 }
 
-func withTx(tx *sql.Tx) queryOption {
-	return func(opts *queryOptions) {
+func withTx(tx *sql.Tx) queryOpt {
+	return func(opts *queryOpts) {
 		opts.tx = tx
 	}
 }
 
-func (sm *Manager) GetFileIDByName(name string, opts ...queryOption) (int64, error) {
+func (sm *Manager) GetFileIDByName(name string, opts ...queryOpt) (int64, error) {
 	query := `SELECT id FROM files WHERE name = $1;`
 	var fileID int64
 
-	options := queryOptions{}
+	options := queryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -540,8 +520,7 @@ func (sm *Manager) GetFileIDByName(name string, opts ...queryOption) (int64, err
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			sm.log.Warn("File not found", "name", name)
-			return 0, nil
+			return 0, ErrNotFound
 		}
 		sm.log.Error("Failed to retrieve file ID", "name", name, "error", err)
 		return 0, err
@@ -575,93 +554,6 @@ func (sm *Manager) insertChunk(layerID int64, offset uint64, data []byte, layerR
 	return nil
 }
 
-// loadChunksBySnapshotLayerID loads all chunk records from the database and groups them by snapshot_layer_id.
-func (sm *Manager) loadChunksBySnapshotLayerID() (map[int64][]Chunk, error) {
-	sm.log.Debug("Loading chunks from metadata store")
-
-	query := `SELECT snapshot_layer_id, offset_value, data, layer_range, file_range FROM chunks ORDER BY snapshot_layer_id, offset_value ASC;`
-	rows, err := sm.db.Query(query)
-	if err != nil {
-		sm.log.Error("Failed to query chunks", "error", err)
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[int64][]Chunk)
-	chunksCount := 0
-	totalDataSize := 0
-
-	for rows.Next() {
-		var layerID int64
-		var offset uint64
-		var data []byte
-		var layerRangeStr, fileRangeStr sql.NullString
-
-		if err := rows.Scan(&layerID, &offset, &data, &layerRangeStr, &fileRangeStr); err != nil {
-			sm.log.Error("Error scanning chunk row", "error", err)
-			return nil, err
-		}
-
-		layerRange := [2]uint64{0, 0}
-		if layerRangeStr.Valid {
-			parts := strings.Split(strings.Trim(layerRangeStr.String, "[)"), ",")
-			if len(parts) == 2 {
-				start, err := strconv.ParseUint(parts[0], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing layer range start", "value", parts[0], "error", err)
-					return nil, err
-				}
-				end, err := strconv.ParseUint(parts[1], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing layer range end", "value", parts[1], "error", err)
-					return nil, err
-				}
-				layerRange[0] = start
-				layerRange[1] = end
-			}
-		}
-
-		fileRange := [2]uint64{0, 0}
-		if fileRangeStr.Valid {
-			parts := strings.Split(strings.Trim(fileRangeStr.String, "[)"), ",")
-			if len(parts) == 2 {
-				start, err := strconv.ParseUint(parts[0], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing file range start", "value", parts[0], "error", err)
-					return nil, err
-				}
-				end, err := strconv.ParseUint(parts[1], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing file range end", "value", parts[1], "error", err)
-					return nil, err
-				}
-				fileRange[0] = start
-				fileRange[1] = end
-			}
-		}
-
-		result[layerID] = append(result[layerID], Chunk{
-			LayerID:    layerID,
-			Offset:     offset,
-			Data:       data,
-			LayerRange: layerRange,
-			FileRange:  fileRange,
-		})
-
-		chunksCount++
-		totalDataSize += len(data)
-		sm.log.Debug("Loaded chunk", "layerID", layerID, "offset", offset, "dataSize", len(data))
-	}
-
-	layerCount := len(result)
-	sm.log.Debug("Chunks loaded successfully",
-		"totalChunks", chunksCount,
-		"layerCount", layerCount,
-		"totalDataSize", totalDataSize)
-
-	return result, nil
-}
-
 // close closes the database.
 func (sm *Manager) Close() error {
 	sm.log.Debug("Closing metadata store database connection")
@@ -674,80 +566,44 @@ func (sm *Manager) Close() error {
 	return err
 }
 
-// calcFileSize calculates the total byte size of the virtual file from all layers and their chunks, respecting layer creation order and handling overlapping file ranges.
-func (sm *Manager) calcFileSize(fileID int64) (uint64, error) {
+// calcSizeOf calculates the total byte size of the virtual file from all layers and their chunks, respecting layer creation order and handling overlapping file ranges.
+//
+// File offset →    0    5    10   15   20   25   30   35   40
+// Layer 3 (newest) ···╔═════╗···╔═══╗··························
+// Layer 2          ········╔══════════╗·······╔═══════════════╗
+// Layer 1 (oldest) ╔═══════════════════════════╗···············
+//
+//									                           ↑
+//		      							                       |
+//	              							         File size = 44
+//
+// File size is determined by the highest end offset across all chunks
+func (sm *Manager) calcSizeOf(fileID int64) (uint64, error) {
 	query := `
-		SELECT e.file_range
+		SELECT upper(e.file_range)
 		FROM chunks e
-		JOIN snapshot_layers l ON e.snapshot_layer_id = l.id
+			INNER JOIN snapshot_layers l ON e.snapshot_layer_id = l.id
 		WHERE l.file_id = $1
-		ORDER BY l.created_at ASC, lower(e.file_range) ASC;
+		ORDER BY upper(e.file_range) DESC
+		LIMIT 1;
 	`
-	rows, err := sm.db.Query(query, fileID)
+	var highestOff uint64
+
+	err := sm.db.QueryRow(query, fileID).Scan(&highestOff)
 	if err != nil {
+		// If the file has no chunks, its size is 0
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
 		sm.log.Error("Failed to query file ranges", "error", err, "fileID", fileID)
 		return 0, err
 	}
-	defer rows.Close()
 
-	type Range struct {
-		start uint64
-		end   uint64
-	}
-
-	var ranges []Range
-
-	for rows.Next() {
-		var fileRangeStr sql.NullString
-
-		if err := rows.Scan(&fileRangeStr); err != nil {
-			sm.log.Error("Error scanning file range row", "error", err)
-			return 0, err
-		}
-
-		if fileRangeStr.Valid {
-			parts := strings.Split(strings.Trim(fileRangeStr.String, "[)"), ",")
-			if len(parts) == 2 {
-				start, err := strconv.ParseUint(parts[0], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing file range start", "value", parts[0], "error", err)
-					return 0, err
-				}
-				end, err := strconv.ParseUint(parts[1], 10, 64)
-				if err != nil {
-					sm.log.Error("Error parsing file range end", "value", parts[1], "error", err)
-					return 0, err
-				}
-				ranges = append(ranges, Range{start: start, end: end})
-			}
-		}
-	}
-
-	if err = rows.Err(); err != nil {
-		sm.log.Error("Error iterating over file range rows", "error", err)
-		return 0, err
-	}
-
-	// Merge overlapping ranges
-	var totalSize uint64
-	if len(ranges) > 0 {
-		// Ranges are already sorted by the SQL query (ORDER BY l.created_at ASC, lower(e.file_range) ASC)
-		// Find the maximum end position, which represents the virtual file size
-		var maxEnd uint64
-		for _, r := range ranges {
-			if r.end > maxEnd {
-				maxEnd = r.end
-			}
-		}
-
-		totalSize = maxEnd
-	}
-
-	return totalSize, nil
+	return highestOff, nil
 }
 
 // LoadLayersByFileID loads all layers associated with a specific file ID from the database.
-func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*SnapshotLayer, error) {
+func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*snapshotLayer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
 	query := `
@@ -763,7 +619,7 @@ func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*SnapshotLayer, error) {
 	}
 	defer rows.Close()
 
-	var layers []*SnapshotLayer
+	var layers []*snapshotLayer
 	layerCount := 0
 
 	for rows.Next() {
@@ -775,8 +631,8 @@ func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*SnapshotLayer, error) {
 			return nil, err
 		}
 
-		layer := newSnapshotLayer(fileID)
-		layer.ID = id
+		layer := &snapshotLayer{FileID: fileID}
+		layer.id = id
 		if versionID.Valid {
 			layer.VersionID = versionID.Int64
 		} else {
@@ -924,7 +780,7 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 	}
 
 	// Create a new active layer within the same transaction
-	layer := newSnapshotLayer(fileID)
+	layer := &snapshotLayer{FileID: fileID}
 	layerId, err := sm.insertActiveLayer(layer, withTx(tx))
 	if err != nil {
 		sm.log.Error("Failed to record new layer", "error", err)
@@ -978,4 +834,24 @@ func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
 	}
 
 	return files, nil
+}
+
+// parseRange parses strings of the form "[start, end)" into two uint64 values
+func parseRange(rg string) (uint64, uint64, error) {
+	parts := strings.Split(strings.Trim(rg, "[)"), ",")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid range format: %s", rg)
+	}
+
+	start, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	end, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return start, end, nil
 }
