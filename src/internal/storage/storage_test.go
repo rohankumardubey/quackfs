@@ -758,6 +758,55 @@ func TestWithinAndOverlappingWrites(t *testing.T) {
 	}
 }
 
+func TestWALDeletionCheckpoint(t *testing.T) {
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	// Create a test database file
+	dbFilename := "test.db"
+	_, err := sm.InsertFile(dbFilename)
+	require.NoError(t, err, "Failed to insert database file")
+
+	// Write some initial data
+	data1 := []byte("initial data")
+	err = sm.WriteFile(dbFilename, data1, 0)
+	require.NoError(t, err, "Failed to write initial data")
+
+	// Create and write to WAL file
+	walFilename := dbFilename + ".wal"
+	_, err = sm.InsertFile(walFilename)
+	require.NoError(t, err, "Failed to insert WAL file")
+
+	walData := []byte("wal data")
+	err = sm.WriteFile(walFilename, walData, 0)
+	require.NoError(t, err, "Failed to write WAL data")
+
+	// Delete the WAL file which should trigger a checkpoint
+	err = sm.DeleteFile(walFilename)
+	require.NoError(t, err, "Failed to delete WAL file")
+
+	// Verify the database file has been versioned
+	db := difffstest.SetupDB(t)
+	defer db.Close()
+
+	// Check that a version was created
+	var versionExists bool
+	err = db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 
+			FROM snapshot_layers l 
+			JOIN versions v ON l.version_id = v.id 
+			JOIN files f ON l.file_id = f.id 
+			WHERE f.name = $1 AND v.tag IS NOT NULL
+		)`, dbFilename).Scan(&versionExists)
+	require.NoError(t, err, "Failed to check version existence")
+	assert.True(t, versionExists, "A version should have been created for the database file")
+
+	// Verify the WAL file is gone
+	_, err = sm.ReadFile(walFilename, 0, uint64(len(walData)))
+	assert.Error(t, err, "WAL file should no longer be accessible")
+}
+
 func getVersionIDByTag(t *testing.T, db *sql.DB, tag string) int64 {
 	query := `SELECT id FROM versions WHERE tag = $1;`
 	var versionID int64

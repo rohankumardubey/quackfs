@@ -259,7 +259,19 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 		f.log.Debug("Updated mtime", "name", f.name, "mtime", req.Mtime)
 	}
 
-	// TODO: truncate file if size is different than current size
+	if req.Valid.Size() {
+		currSize, err := f.sm.SizeOf(f.name)
+		if err != nil {
+			f.log.Error("Failed to get file size", "name", f.name, "error", err)
+			return err
+		}
+
+		if currSize > req.Size {
+			f.log.Warn("TODO: truncate file", "name", f.name, "size", req.Size)
+		} else if currSize < req.Size {
+			f.log.Warn("TODO: extend file", "name", f.name, "size", req.Size)
+		}
+	}
 
 	f.log.Debug("File attributes updated successfully", "name", f.name)
 

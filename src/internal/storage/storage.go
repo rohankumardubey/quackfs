@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/log"
+	"github.com/google/uuid"
 )
 
 type snapshotLayer struct {
@@ -758,6 +759,20 @@ func (sm *Manager) DeleteFile(name string) error {
 		}
 	}()
 
+	// When the DuckDB WAL file is delete it means a CHECKPOINT is being made
+	// which in this case we want to commit the changes to the database
+	// in a new version tag.
+	if strings.HasSuffix(name, ".wal") {
+		version := uuid.New().String()
+		database := strings.TrimSuffix(name, ".wal")
+		sm.log.Info("WAL is being deleted, commiting database checkpoint", "name", database, "version", version)
+		err = sm.Checkpoint(database, version)
+		if err != nil {
+			sm.log.Error("Failed to checkpoint WAL file", "error", err)
+			return err
+		}
+	}
+
 	// Retrieve the file ID
 	fileID, err := sm.GetFileIDByName(name, withTx(tx))
 	if err != nil {
@@ -862,7 +877,6 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 		return fmt.Errorf("failed to record new layer: %w", err)
 	}
 
-	// Commit transaction
 	err = tx.Commit()
 	if err != nil {
 		sm.log.Error("Failed to commit transaction", "error", err)

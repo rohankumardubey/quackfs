@@ -41,8 +41,6 @@ func main() {
 	switch command {
 	case "write":
 		executeWriteCommand(sm, log)
-	case "checkpoint":
-		executeCheckpointCommand(sm, log)
 	case "read":
 		executeReadCommand(sm, log)
 	default:
@@ -57,12 +55,10 @@ func printUsage() {
 	fmt.Println("Usage: op <command> [options]")
 	fmt.Println("Commands:")
 	fmt.Println("  write      - Write data to a file")
-	fmt.Println("  checkpoint - Checkpoint a file")
 	fmt.Println("  read       - Read and print file content to standard output")
 	fmt.Println("")
 	fmt.Println("For detailed command usage:")
 	fmt.Println("  op write -h")
-	fmt.Println("  op checkpoint -h")
 	fmt.Println("  op read -h")
 	fmt.Println("")
 	fmt.Println("Examples:")
@@ -160,52 +156,6 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 		"dataSize", len(dataBytes))
 
 	fmt.Printf("Successfully wrote %d bytes to %s at offset %d\n", len(dataBytes), *fileName, *offset)
-}
-
-// executeCheckpointCommand handles the "checkpoint" subcommand
-func executeCheckpointCommand(sm *storage.Manager, log *log.Logger) {
-	// Define command-line flags for checkpoint command
-	checkpointCmd := flag.NewFlagSet("checkpoint", flag.ExitOnError)
-	fileName := checkpointCmd.String("file", "", "Target file to checkpoint")
-	version := checkpointCmd.String("version", "", "Version tag to associate with the active snapshot layer")
-
-	// Parse the flags
-	checkpointCmd.Parse(os.Args[1:])
-
-	// Validate required flags
-	if *fileName == "" {
-		log.Error("Missing required flag: -file")
-		fmt.Println("Usage: op checkpoint -file <filename> [-version <tag>]")
-		os.Exit(1)
-	}
-
-	// Check if the file exists
-	fileID, err := sm.GetFileIDByName(*fileName)
-	if err != nil {
-		log.Fatal("Failed to check if file exists", "error", err)
-	}
-
-	// If the file doesn't exist, report an error
-	if fileID == 0 {
-		log.Error("File does not exist", "fileName", *fileName)
-		fmt.Printf("Error: File '%s' does not exist\n", *fileName)
-		os.Exit(1)
-	}
-
-	// Checkpoint the file
-	err = sm.Checkpoint(*fileName, *version)
-	if err != nil {
-		log.Fatal("Failed to checkpoint file", "error", err)
-	}
-
-	// Log success message with version tag if provided
-	if *version != "" {
-		log.Info("File checkpointed successfully", "fileName", *fileName, "version", *version)
-		fmt.Printf("Successfully checkpointed file %s with version tag %s\n", *fileName, *version)
-	} else {
-		log.Info("File checkpointed successfully", "fileName", *fileName)
-		fmt.Printf("Successfully checkpointed file %s\n", *fileName)
-	}
 }
 
 // executeReadCommand handles the "read" subcommand
