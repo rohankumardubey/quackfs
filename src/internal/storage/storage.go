@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/charmbracelet/log"
 )
@@ -22,7 +21,6 @@ type snapshotLayer struct {
 var ErrNotFound = errors.New("not found")
 
 type Manager struct {
-	mu  sync.RWMutex // Primary mutex for protecting all shared state
 	db  *sql.DB
 	log *log.Logger
 }
@@ -43,13 +41,32 @@ func NewManager(db *sql.DB, log *log.Logger) *Manager {
 // WriteFile writes data to the active layer at the specified offset.
 // It returns the active layer's ID and the offset where the data was written.
 func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	sm.log.Debug("Writing data", "filename", filename, "size", len(data), "offset", offset)
 
+	// Begin transaction
+	tx, err := sm.db.Begin()
+	if err != nil {
+		sm.log.Error("Failed to begin transaction", "error", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Setup deferred rollback in case of error or panic
+	defer func() {
+		if p := recover(); p != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				sm.log.Error("Failed to rollback transaction after panic", "error", rbErr)
+			}
+			// Re-panic after rollback
+			panic(p)
+		} else if err != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				sm.log.Error("Failed to rollback transaction", "error", rbErr)
+			}
+		}
+	}()
+
 	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(filename)
+	fileID, err := sm.GetFileIDByName(filename, withTx(tx))
 	if err != nil {
 		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return fmt.Errorf("failed to get file ID: %w", err)
@@ -58,13 +75,13 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 	// Get the active layer
 	query := `SELECT id FROM snapshot_layers WHERE file_id = $1 AND active = 1 ORDER BY id ASC LIMIT 1;`
 	var layerID int64
-	err = sm.db.QueryRow(query, fileID).Scan(&layerID)
+	err = tx.QueryRow(query, fileID).Scan(&layerID)
 	if err != nil {
 		sm.log.Error("Failed to query active layer", "filename", filename, "error", err)
 		return fmt.Errorf("failed to query active layer: %w", err)
 	}
 
-	fileSize, err := sm.calcSizeOf(fileID)
+	fileSize, err := sm.calcSizeOf(fileID, withTx(tx))
 	if err != nil {
 		sm.log.Error("Failed to calculate file size", "fileID", fileID, "error", err)
 		return fmt.Errorf("failed to calculate file size: %w", err)
@@ -77,13 +94,13 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 		// Create a buffer of zero bytes
 		zeroes := make([]byte, bytesToAdd)
 
-		layerRange, fileRange, err := sm.calculateRanges(layerID, fileSize, len(zeroes))
+		layerRange, fileRange, err := sm.calculateRanges(layerID, fileSize, len(zeroes), withTx(tx))
 		if err != nil {
 			sm.log.Error("Failed to calculate ranges", "layerID", layerID, "offset", offset, "error", err)
 			return fmt.Errorf("failed to calculate ranges: %w", err)
 		}
 
-		if err = sm.insertChunk(layerID, offset, zeroes, layerRange, fileRange); err != nil {
+		if err = sm.insertChunk(layerID, offset, zeroes, layerRange, fileRange, withTx(tx)); err != nil {
 			sm.log.Error("Failed to record chunk", "layerID", layerID, "offset", offset, "error", err)
 			return fmt.Errorf("failed to record chunk: %w", err)
 		}
@@ -94,16 +111,21 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 	sm.log.Debug("Added chunk to active layer", "layerID", layerID, "offset", offset, "size", len(data))
 
 	// Calculate ranges and record chunk in the database
-	layerRange, fileRange, err := sm.calculateRanges(layerID, offset, len(data))
-
+	layerRange, fileRange, err := sm.calculateRanges(layerID, offset, len(data), withTx(tx))
 	if err != nil {
 		sm.log.Error("Failed to calculate ranges", "layerID", layerID, "offset", offset, "error", err)
 		return fmt.Errorf("failed to calculate ranges: %w", err)
 	}
 
-	if err = sm.insertChunk(layerID, offset, data, layerRange, fileRange); err != nil {
+	if err = sm.insertChunk(layerID, offset, data, layerRange, fileRange, withTx(tx)); err != nil {
 		sm.log.Error("Failed to record chunk", "layerID", layerID, "offset", offset, "error", err)
 		return fmt.Errorf("failed to record chunk: %w", err)
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		sm.log.Error("Failed to commit transaction", "error", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sm.log.Debug("Data written successfully", "layerID", layerID, "offset", offset, "size", len(data))
@@ -111,10 +133,10 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 }
 
 // calculateRanges computes the layer-relative and file-absolute ranges for a chunk
-func (sm *Manager) calculateRanges(layerID int64, offset uint64, dataSize int) ([2]uint64, [2]uint64, error) {
+func (sm *Manager) calculateRanges(layerID int64, offset uint64, dataSize int, opts ...queryOpt) ([2]uint64, [2]uint64, error) {
 	dataLength := uint64(dataSize)
 
-	layerSize, err := sm.calcLayerSize(layerID)
+	layerSize, err := sm.calcLayerSize(layerID, opts...)
 	if err != nil {
 		return [2]uint64{}, [2]uint64{}, fmt.Errorf("failed to retrieve layer size: %w", err)
 	}
@@ -136,9 +158,6 @@ func (sm *Manager) calculateRanges(layerID int64, offset uint64, dataSize int) (
 }
 
 func (sm *Manager) SizeOf(filename string) (uint64, error) {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
 	fileID, err := sm.GetFileIDByName(filename)
 	if err != nil {
 		return 0, err
@@ -186,11 +205,30 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 			"size", size)
 	}
 
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	// Begin transaction
+	tx, err := sm.db.Begin()
+	if err != nil {
+		sm.log.Error("Failed to begin transaction", "error", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Setup deferred rollback in case of error or panic
+	defer func() {
+		if p := recover(); p != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				sm.log.Error("Failed to rollback transaction after panic", "error", rbErr)
+			}
+			// Re-panic after rollback
+			panic(p)
+		} else if err != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				sm.log.Error("Failed to rollback transaction", "error", rbErr)
+			}
+		}
+	}()
 
 	// Get the file ID from the file name
-	id, err := sm.GetFileIDByName(filename)
+	id, err := sm.GetFileIDByName(filename, withTx(tx))
 	if id == 0 {
 		sm.log.Error("File not found", "filename", filename)
 		return nil, fmt.Errorf("file not found")
@@ -205,7 +243,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	// check if there's a layer for this file with the given version tag
 	if hasVersion {
 		exists := false
-		err = sm.db.QueryRow("SELECT EXISTS(SELECT 1 FROM snapshot_layers inner join versions on versions.id = snapshot_layers.version_id WHERE snapshot_layers.file_id = $1 and versions.tag = $2)", id, options.version).Scan(&exists)
+		err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM snapshot_layers inner join versions on versions.id = snapshot_layers.version_id WHERE snapshot_layers.file_id = $1 and versions.tag = $2)", id, options.version).Scan(&exists)
 		if err != nil {
 			sm.log.Error("failed to check if layer exists", "id", id, "version", options.version, "error", err)
 			return nil, fmt.Errorf("failed to check if layer exists: %w", err)
@@ -217,7 +255,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	}
 
 	// Load layers for this specific file
-	allLayers, err := sm.LoadLayersByFileID(id)
+	allLayers, err := sm.LoadLayersByFileID(id, withTx(tx))
 	if err != nil {
 		sm.log.Error("failed to load layers", "id", id, "error", err)
 		if hasVersion {
@@ -249,7 +287,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		WHERE l.file_id = $1
 		ORDER BY c.id ASC;
 	`
-	rows, err := sm.db.Query(query, id)
+	rows, err := tx.Query(query, id)
 	if err != nil {
 		sm.log.Error("Failed to query chunks", "error", err)
 		return nil, err
@@ -354,6 +392,12 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		}
 	}
 
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		sm.log.Error("Failed to commit transaction", "error", err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	// Apply offset and size limits to the full content
 	if offset >= uint64(len(buf)) {
 		sm.log.Debug("Requested offset beyond content size", "offset", offset, "contentSize", len(buf))
@@ -382,7 +426,12 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	return result, nil
 }
 
-func (sm *Manager) calcLayerSize(layerID int64) (uint64, error) {
+func (sm *Manager) calcLayerSize(layerID int64, opts ...queryOpt) (uint64, error) {
+	options := queryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	query := `
 		SELECT upper(layer_range)::bigint AS size
 		FROM chunks
@@ -392,7 +441,14 @@ func (sm *Manager) calcLayerSize(layerID int64) (uint64, error) {
 	`
 
 	var size sql.NullInt64
-	err := sm.db.QueryRow(query, layerID).Scan(&size)
+	var err error
+
+	if options.tx != nil {
+		err = options.tx.QueryRow(query, layerID).Scan(&size)
+	} else {
+		err = sm.db.QueryRow(query, layerID).Scan(&size)
+	}
+
 	if err != nil {
 		// if the layer has no chunks, its size is 0
 		if err == sql.ErrNoRows {
@@ -403,6 +459,7 @@ func (sm *Manager) calcLayerSize(layerID int64) (uint64, error) {
 	if !size.Valid {
 		return 0, fmt.Errorf("invalid base value for layer %d", layerID)
 	}
+
 	return uint64(size.Int64), nil
 }
 
@@ -515,7 +572,7 @@ func (sm *Manager) GetFileIDByName(name string, opts ...queryOpt) (int64, error)
 
 // insertChunk inserts a new chunk record.
 // Now includes layer_range and file_range parameters
-func (sm *Manager) insertChunk(layerID int64, offset uint64, data []byte, layerRange [2]uint64, fileRange [2]uint64) error {
+func (sm *Manager) insertChunk(layerID int64, offset uint64, data []byte, layerRange [2]uint64, fileRange [2]uint64, opts ...queryOpt) error {
 	sm.log.Debug("Inserting chunk in the database",
 		"layerID", layerID,
 		"offset", offset,
@@ -528,7 +585,19 @@ func (sm *Manager) insertChunk(layerID int64, offset uint64, data []byte, layerR
 
 	query := `INSERT INTO chunks (snapshot_layer_id, offset_value, data, layer_range, file_range) 
 	         VALUES ($1, $2, $3, $4, $5);`
-	_, err := sm.db.Exec(query, layerID, offset, data, layerRangeStr, fileRangeStr)
+
+	options := queryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var err error
+	if options.tx != nil {
+		_, err = options.tx.Exec(query, layerID, offset, data, layerRangeStr, fileRangeStr)
+	} else {
+		_, err = sm.db.Exec(query, layerID, offset, data, layerRangeStr, fileRangeStr)
+	}
+
 	if err != nil {
 		sm.log.Error("Failed to insert chunk", "layerID", layerID, "offset", offset, "error", err)
 		return err
@@ -562,7 +631,7 @@ func (sm *Manager) Close() error {
 //	              							         File size = 44
 //
 // File size is determined by the highest end offset across all chunks
-func (sm *Manager) calcSizeOf(fileID int64) (uint64, error) {
+func (sm *Manager) calcSizeOf(fileID int64, opts ...queryOpt) (uint64, error) {
 	query := `
 		SELECT upper(e.file_range)
 		FROM chunks e
@@ -573,7 +642,18 @@ func (sm *Manager) calcSizeOf(fileID int64) (uint64, error) {
 	`
 	var highestOff uint64
 
-	err := sm.db.QueryRow(query, fileID).Scan(&highestOff)
+	options := queryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var err error
+	if options.tx != nil {
+		err = options.tx.QueryRow(query, fileID).Scan(&highestOff)
+	} else {
+		err = sm.db.QueryRow(query, fileID).Scan(&highestOff)
+	}
+
 	if err != nil {
 		// If the file has no chunks, its size is 0
 		if err == sql.ErrNoRows {
@@ -587,7 +667,7 @@ func (sm *Manager) calcSizeOf(fileID int64) (uint64, error) {
 }
 
 // LoadLayersByFileID loads all layers associated with a specific file ID from the database.
-func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*snapshotLayer, error) {
+func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*snapshotLayer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
 	query := `
@@ -596,7 +676,21 @@ func (sm *Manager) LoadLayersByFileID(fileID int64) ([]*snapshotLayer, error) {
 		LEFT JOIN versions ON snapshot_layers.version_id = versions.id
 		WHERE file_id = $1 ORDER BY id ASC;
 	`
-	rows, err := sm.db.Query(query, fileID)
+
+	options := queryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var rows *sql.Rows
+	var err error
+
+	if options.tx != nil {
+		rows, err = options.tx.Query(query, fileID)
+	} else {
+		rows, err = sm.db.Query(query, fileID)
+	}
+
 	if err != nil {
 		sm.log.Error("Failed to query layers for file", "fileID", fileID, "error", err)
 		return nil, err
@@ -705,9 +799,6 @@ func (sm *Manager) DeleteFile(name string) error {
 }
 
 func (sm *Manager) Checkpoint(filename string, version string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	// Start transaction
 	tx, err := sm.db.Begin()
 	if err != nil {
@@ -791,9 +882,6 @@ type fileInfo struct {
 
 // GetAllFiles returns a list of all files in the database
 func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
 	query := `SELECT id, name FROM files;`
 	rows, err := sm.db.Query(query)
 	if err != nil {
