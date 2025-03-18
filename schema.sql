@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS snapshot_layers (
 CREATE TABLE IF NOT EXISTS chunks (
     id SERIAL PRIMARY KEY,
     snapshot_layer_id INTEGER REFERENCES snapshot_layers(id),
-    offset_value BIGINT NOT NULL,
     data BYTEA NOT NULL,
     layer_range INT8RANGE NOT NULL,
     file_range INT8RANGE NOT NULL,

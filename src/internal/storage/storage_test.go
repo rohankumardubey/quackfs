@@ -72,7 +72,7 @@ func TestCheckpointingNewActiveLayer(t *testing.T) {
 
 	data, err := sm.ReadFile(filename, uint64(len(input1)), uint64(len(input2)))
 	require.NoError(t, err, "GetDataRange error")
-	assert.Equal(t, input2, data, "Retrieved data should match second input")
+	assert.Equal(t, string(input2), string(data), "Retrieved data should match second input")
 }
 
 func TestReadFromActiveLayer(t *testing.T) {
@@ -833,4 +833,52 @@ func getVersionTagByID(t *testing.T, db *sql.DB, id int64) string {
 	}
 
 	return tag
+}
+
+func TestReadFileStartingMidChunk(t *testing.T) {
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	filename := "testfile_read_with_offset"
+	_, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	// Write initial data - this will be our first chunk
+	initialData := []byte("initial data for the file")
+	err = sm.WriteFile(filename, initialData, 0)
+	require.NoError(t, err, "Failed to write initial data")
+
+	// Create a checkpoint to seal this layer
+	err = sm.Checkpoint(filename, "v1")
+	require.NoError(t, err, "Failed to checkpoint")
+
+	// Write more data at a later position - this will be our second chunk
+	secondData := []byte("second chunk data")
+	secondOffset := uint64(50) // Well beyond the first chunk
+	err = sm.WriteFile(filename, secondData, secondOffset)
+	require.NoError(t, err, "Failed to write second data")
+
+	// Now try to read starting from an offset that's in the middle of the first chunk
+	// This should trigger the potential integer underflow in the bufferPos calculation
+	readOffset := uint64(10) // After the start of the first chunk
+	readSize := uint64(100)  // Long enough to include the second chunk
+
+	// This read would potentially cause the out-of-bounds error if not handled correctly
+	data, err := sm.ReadFile(filename, readOffset, readSize)
+	require.NoError(t, err, "ReadFile should not fail with offset in the middle of a chunk")
+
+	// Verify we got the expected data (partial first chunk + second chunk)
+	expectedFirstPart := initialData[readOffset:]
+	expectedData := make([]byte, secondOffset+uint64(len(secondData))-readOffset)
+
+	// Copy the expected partial first chunk
+	copy(expectedData, expectedFirstPart)
+
+	// The second chunk should start at offset 50 relative to the file start
+	// But in our expectedData slice, it starts at (50 - readOffset)
+	secondChunkStartInSlice := secondOffset - readOffset
+	copy(expectedData[secondChunkStartInSlice:], secondData)
+
+	// Verify we got what we expected
+	assert.Equal(t, expectedData, data, "Retrieved data should match expected partial chunks")
 }
