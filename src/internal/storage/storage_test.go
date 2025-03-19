@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"database/sql"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,18 +21,20 @@ func TestWriteReadActiveLayer(t *testing.T) {
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
 
-	// Load layers for the file
-	layers, err := sm.LoadLayersByFileID(fileID)
-	require.NoError(t, err, "Failed to load layers for file")
-	require.Equal(t, 1, len(layers), "Expected one initial layer")
+	require.Equal(t, sm.GetActiveLayerSize(fileID), uint64(0), "Active layer should be empty")
+	require.Nil(t, sm.GetActiveLayerData(fileID), "Active layer should be nil")
 
 	input := []byte("hello world")
 	err = sm.WriteFile(filename, input, 0)
 	require.NoError(t, err, "Write error")
+	require.Equal(t, sm.GetActiveLayerSize(fileID), uint64(len(input)), "Active layer should be the same size as the input")
+	require.Equal(t, string(sm.GetActiveLayerData(fileID)), string(input), "Active layer should contain the input data")
 
 	// Get the file size to read the entire content
 	fileSize, err := sm.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
+	assert.Equal(t, uint64(len(input)), fileSize, "File size should match input length")
+
 	fullContent, err := sm.ReadFile(filename, 0, fileSize)
 	require.NoError(t, err, "Failed to get full content")
 	assert.Equal(t, len(input), len(fullContent), "Full content length should match input length")
@@ -48,13 +51,8 @@ func TestCheckpointingNewActiveLayer(t *testing.T) {
 	filename := "testfile_checkpoint_layer" // Unique file name for testing
 
 	// Insert the file, which should create an initial active layer
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
-
-	// Load layers for the file
-	layers, err := sm.LoadLayersByFileID(fileID)
-	require.NoError(t, err, "Failed to load layers for file")
-	require.Equal(t, 1, len(layers), "Expected one initial layer")
 
 	input1 := []byte("data1")
 	err = sm.WriteFile(filename, input1, 0)
@@ -123,13 +121,8 @@ func TestPartialRead(t *testing.T) {
 	filename := "testfile_partial_read" // Unique file name for testing
 
 	// Insert the file, which should create an initial active layer
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
-
-	// Load layers for the file
-	layers, err := sm.LoadLayersByFileID(fileID)
-	require.NoError(t, err, "Failed to load layers for file")
-	require.Equal(t, 1, len(layers), "Expected one initial layer")
 
 	input := []byte("partial read test")
 	err = sm.WriteFile(filename, input, 0)
@@ -141,25 +134,6 @@ func TestPartialRead(t *testing.T) {
 
 	assert.Equal(t, int(partialSize), len(data), "Partial read should return requested length")
 	assert.Equal(t, input[:partialSize], data, "Partial read should return correct data slice")
-}
-
-func TestInitialLayerCreationOnFileInsert(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	filename := "newfile"
-
-	// Insert the file, which should create an initial active layer
-	fileID, err := sm.InsertFile(filename)
-	require.NoError(t, err, "Failed to insert file")
-
-	// Load layers for the file
-	layers, err := sm.LoadLayersByFileID(fileID)
-	require.NoError(t, err, "Failed to load layers for file")
-
-	// Verify that one layer exists and it is active
-	require.Equal(t, 1, len(layers), "Expected one initial layer")
-	assert.False(t, layers[0].Active, "Initial layer should be active")
 }
 
 func TestGetDataRangeByFileName(t *testing.T) {
@@ -206,10 +180,14 @@ func TestStorageManagerPersistence(t *testing.T) {
 	err = sm.Checkpoint(filename, "v1")
 	require.NoError(t, err, "Failed to commit layer")
 
-	// Write more data
+	// Write more data to active layer
 	data2 := []byte("more data")
 	err = sm.WriteFile(filename, data2, uint64(len(data1)))
 	require.NoError(t, err, "Failed to write more data")
+
+	// Checkpoint again to persist the second data
+	err = sm.Checkpoint(filename, "v2")
+	require.NoError(t, err, "Failed to commit second layer")
 
 	// Verify the data is correct
 	fileSize, err := sm.SizeOf(filename)
@@ -223,25 +201,40 @@ func TestStorageManagerPersistence(t *testing.T) {
 	sm2, cleanup2 := difffstest.SetupStorageManager(t)
 	defer cleanup2()
 
-	// Verify the data is still correct
+	// Verify the checkpointed data is still correct (should include data1 and data2)
 	fileSize2, err := sm2.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent2, err := sm2.ReadFile(filename, 0, fileSize2)
 	require.NoError(t, err, "Failed to get full content")
-	assert.Equal(t, expectedContent, fullContent2, "Full content should persist across storage manager instances")
+	assert.Equal(t, expectedContent, fullContent2, "Checkpointed content should persist across storage manager instances")
 
 	// Verify we can still write to the file
 	data3 := []byte("even more data")
 	err = sm2.WriteFile(filename, data3, uint64(len(data1)+len(data2)))
 	require.NoError(t, err, "Failed to write additional data")
 
-	// Verify the combined data is correct
+	// Verify the combined data is correct in memory
 	fileSize3, err := sm2.SizeOf(filename)
 	require.NoError(t, err, "Failed to get file size")
 	fullContent3, err := sm2.ReadFile(filename, 0, fileSize3)
 	require.NoError(t, err, "Failed to get full content")
 	expectedContent3 := append(expectedContent, data3...)
 	assert.Equal(t, expectedContent3, fullContent3, "Full content should include all writes")
+
+	// Checkpoint again to persist the third data
+	err = sm2.Checkpoint(filename, "v3")
+	require.NoError(t, err, "Failed to commit third layer")
+
+	// Create yet another storage manager to verify all three checkpoints persist
+	sm3, cleanup3 := difffstest.SetupStorageManager(t)
+	defer cleanup3()
+
+	// Verify all checkpointed data persists (should include data1, data2, and data3)
+	fileSize4, err := sm3.SizeOf(filename)
+	require.NoError(t, err, "Failed to get file size")
+	fullContent4, err := sm3.ReadFile(filename, 0, fileSize4)
+	require.NoError(t, err, "Failed to get full content")
+	assert.Equal(t, expectedContent3, fullContent4, "All checkpointed content should persist")
 }
 
 func TestFuseScenario(t *testing.T) {
@@ -284,14 +277,38 @@ func TestFuseScenario(t *testing.T) {
 	require.NoError(t, err, "Failed to get file size")
 	assert.Equal(t, uint64(len(combinedData)), size, "File size should match combined data length")
 
+	// Create checkpoint for additional data
+	err = sm.Checkpoint(filename, "v2")
+	require.NoError(t, err, "Failed to commit second layer")
+
 	// Create a new storage manager to simulate restarting
 	sm2, cleanup2 := difffstest.SetupStorageManager(t)
 	defer cleanup2()
 
-	// Verify data persists
+	// Verify checkpointed data persists
 	readAfterRestart, err := sm2.ReadFile(filename, 0, uint64(len(combinedData)))
 	require.NoError(t, err, "Failed to read data after restart")
-	assert.Equal(t, combinedData, readAfterRestart, "Data should persist after restart")
+	assert.Equal(t, combinedData, readAfterRestart, "Checkpointed data should persist after restart")
+
+	// Write more data after restart
+	finalData := []byte(" (final segment)")
+	err = sm2.WriteFile(filename, finalData, uint64(len(combinedData)))
+	require.NoError(t, err, "Failed to write final data")
+
+	// Read the final combined data
+	finalCombinedData := append(combinedData, finalData...)
+	readFinalData, err := sm2.ReadFile(filename, 0, uint64(len(finalCombinedData)))
+	require.NoError(t, err, "Failed to read final combined data")
+	assert.Equal(t, finalCombinedData, readFinalData, "Final combined data should match expected")
+
+	// Create a third storage manager without checkpointing
+	sm3, cleanup3 := difffstest.SetupStorageManager(t)
+	defer cleanup3()
+
+	// Verify only the checkpointed data persists (without the final segment)
+	persistedData, err := sm3.ReadFile(filename, 0, uint64(len(finalCombinedData)))
+	require.NoError(t, err, "Failed to read persisted data")
+	assert.Equal(t, combinedData, persistedData, "Only checkpointed data should persist across instances")
 }
 
 func TestWriteBeyondFileSize(t *testing.T) {
@@ -445,13 +462,8 @@ func TestExampleWorkflow(t *testing.T) {
 	filename := "testfile_example_workflow"
 
 	// Insert the file, which should create an initial active layer
-	fileID, err := sm.InsertFile(filename)
+	_, err := sm.InsertFile(filename)
 	require.NoError(t, err, "Failed to insert file")
-
-	// Load layers for the file
-	layers, err := sm.LoadLayersByFileID(fileID)
-	require.NoError(t, err, "Failed to load layers for file")
-	require.Equal(t, 1, len(layers), "Expected one initial layer")
 
 	// Write initial data.
 	data1 := []byte("Hello, checkpoint!")
@@ -572,7 +584,7 @@ func TestVersionedLayers(t *testing.T) {
 	// Load all layers for the file
 	layers, err := sm.LoadLayersByFileID(fileID)
 	require.NoError(t, err, "Failed to load layers for file")
-	require.Equal(t, 3, len(layers), "Expected three layers (initial, v1, v2)")
+	require.Equal(t, 2, len(layers), "Expected two layers (v1, v2)")
 
 	db := difffstest.SetupDB(t)
 	defer db.Close()
@@ -584,7 +596,6 @@ func TestVersionedLayers(t *testing.T) {
 	// Print actual values for debugging
 	t.Logf("Layer 0 version ID: %d", layers[0].VersionID)
 	t.Logf("Layer 1 version ID: %d", layers[1].VersionID)
-	t.Logf("Layer 2 version ID: %d", layers[2].VersionID)
 	t.Logf("Version ID for tag v1: %d", versionID1)
 	t.Logf("Version ID for tag v2: %d", versionID2)
 
@@ -594,9 +605,6 @@ func TestVersionedLayers(t *testing.T) {
 
 	// Second layer has version v2
 	assert.Equal(t, versionTag2, layers[1].Tag, "Second layer should have version v2")
-
-	// Third layer has no version (it's the active layer)
-	assert.Equal(t, "", layers[2].Tag, "Third layer should have no version (active layer)")
 
 	// Verify that we can retrieve version tags by ID
 	tag1 := getVersionTagByID(t, db, versionID1)
@@ -807,34 +815,6 @@ func TestWALDeletionCheckpoint(t *testing.T) {
 	assert.Error(t, err, "WAL file should no longer be accessible")
 }
 
-func getVersionIDByTag(t *testing.T, db *sql.DB, tag string) int64 {
-	query := `SELECT id FROM versions WHERE tag = $1;`
-	var versionID int64
-	err := db.QueryRow(query, tag).Scan(&versionID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0
-		}
-		t.Fatalf("Failed to get version ID for tag %s: %v", tag, err)
-	}
-
-	return versionID
-}
-
-func getVersionTagByID(t *testing.T, db *sql.DB, id int64) string {
-	query := `SELECT tag FROM versions WHERE id = $1;`
-	var tag string
-	err := db.QueryRow(query, id).Scan(&tag)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return ""
-		}
-		t.Fatalf("Failed to get version tag for ID %d: %v", id, err)
-	}
-
-	return tag
-}
-
 func TestReadFileStartingMidChunk(t *testing.T) {
 	sm, cleanup := difffstest.SetupStorageManager(t)
 	defer cleanup()
@@ -881,4 +861,159 @@ func TestReadFileStartingMidChunk(t *testing.T) {
 
 	// Verify we got what we expected
 	assert.Equal(t, expectedData, data, "Retrieved data should match expected partial chunks")
+}
+
+func TestConcurrentWrites(t *testing.T) {
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	filename := "testfile_concurrent_writes"
+	_, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	barrier := sync.WaitGroup{}
+	barrier.Add(1)
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		sm.WriteFile(filename, []byte("hello"), 0)
+	}()
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		sm.WriteFile(filename, []byte("world"), 0)
+	}()
+
+	barrier.Done()
+	wg.Wait()
+
+	// Check the final content
+	content, err := sm.ReadFile(filename, 0, 5)
+	require.NoError(t, err, "Failed to read file")
+
+	if string(content) != "hello" && string(content) != "world" {
+		t.Fatalf("Content should be 'hello' or 'world', got %s", string(content))
+	}
+}
+
+func TestConcurrentReadWrite(t *testing.T) {
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	filename := "testfile_concurrent_read_write"
+	_, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	wg := sync.WaitGroup{}
+	wg.Add(3)
+
+	barrier := sync.WaitGroup{}
+	barrier.Add(1)
+
+	var content []byte
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		sm.WriteFile(filename, []byte("hello"), 0)
+	}()
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		sm.WriteFile(filename, []byte("world"), 0)
+	}()
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		content, _ = sm.ReadFile(filename, 0, 5)
+	}()
+
+	barrier.Done()
+	wg.Wait()
+
+	if string(content) != "hello" && string(content) != "world" && string(content) != "" {
+		t.Fatalf("Content should be 'hello' or 'world' or '', got %s", string(content))
+	}
+}
+
+func TestConcurrentCheckpoint(t *testing.T) {
+	sm, cleanup := difffstest.SetupStorageManager(t)
+	defer cleanup()
+
+	filename := "testfile_concurrent_checkpoint"
+	fileID, err := sm.InsertFile(filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	// Write some data to the file
+	err = sm.WriteFile(filename, []byte("test data"), 0)
+	require.NoError(t, err, "Failed to write data")
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	var barrier sync.WaitGroup
+	barrier.Add(1)
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		assert.NoError(t, sm.Checkpoint(filename, "v1"))
+	}()
+
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		assert.NoError(t, sm.Checkpoint(filename, "v2"))
+	}()
+
+	barrier.Done()
+	wg.Wait()
+
+	// either v1 or v2 should be the current version
+	db := difffstest.SetupDB(t)
+	defer db.Close()
+
+	layers, err := sm.LoadLayersByFileID(fileID)
+	require.NoError(t, err, "Failed to load layers")
+	assert.Equal(t, 1, len(layers), "Should have 1 layer")
+
+	tag := layers[0].Tag
+	if tag != "v1" && tag != "v2" {
+		t.Fatalf("Tag should be 'v1' or 'v2', got %s", tag)
+	}
+}
+
+func getVersionIDByTag(t *testing.T, db *sql.DB, tag string) int64 {
+	query := `SELECT id FROM versions WHERE tag = $1;`
+	var versionID int64
+	err := db.QueryRow(query, tag).Scan(&versionID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0
+		}
+		t.Fatalf("Failed to get version ID for tag %s: %v", tag, err)
+	}
+
+	return versionID
+}
+
+func getVersionTagByID(t *testing.T, db *sql.DB, id int64) string {
+	query := `SELECT tag FROM versions WHERE id = $1;`
+	var tag string
+	err := db.QueryRow(query, id).Scan(&tag)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ""
+		}
+		t.Fatalf("Failed to get version tag for ID %d: %v", id, err)
+	}
+
+	return tag
 }
