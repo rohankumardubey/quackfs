@@ -41,8 +41,8 @@ jobs:
             sleep 10
           done
 
-      - name: Run test query
-        run: psql -U postgres -h localhost -p 5432 -c "SELECT 1"
+      - name: Run all tests
+        run: make test
         env:
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 5432
