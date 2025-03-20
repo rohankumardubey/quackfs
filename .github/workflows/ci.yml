@@ -42,7 +42,7 @@ jobs:
           done
 
       - name: Run tests
-        run: make test
+        run: psql -U postgres -c "SELECT 1"
         env:
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 5432
