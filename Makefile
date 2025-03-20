@@ -2,6 +2,10 @@
 
 .DEFAULT_GOAL := run
 
+# Set default PGPASSWORD if not defined
+PGPASSWORD ?= password
+export PGPASSWORD
+
 build:
 	GOEXPERIMENT=synctest go build -o quackfs.exe ./src/cmd/quackfs
 
