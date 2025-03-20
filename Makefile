@@ -16,7 +16,7 @@ clean: db.drop
 db.init:
 	@echo "Setting up PostgreSQL database if not already running"
 	@sudo service postgresql status > /dev/null || sudo service postgresql start
-	@for i in {1..10}; do pg_isready -h localhost && break || sleep 1; done
+	@for i in {1..10}; do pg_isready -h localhost -U postgres && break || sleep 1; done
 	@if ! psql -U postgres -lqt | cut -d \| -f 1 | grep -qw quackfs; then \
 		echo "Creating quackfs database..."; \
 		psql -U postgres -c "CREATE DATABASE quackfs;"; \
@@ -30,7 +30,7 @@ db.init:
 db.test.init:
 	@echo "Setting up PostgreSQL test database if not already running"
 	@sudo service postgresql status > /dev/null || sudo service postgresql start
-	@for i in {1..10}; do pg_isready -h localhost && break || sleep 1; done
+	@for i in {1..10}; do pg_isready -h localhost -U postgres && break || sleep 1; done
 	@if ! psql -U postgres -lqt | cut -d \| -f 1 | grep -qw quackfs_test; then \
 		echo "Creating quackfs_test database..."; \
 		psql -U postgres -c "CREATE DATABASE quackfs_test;"; \
