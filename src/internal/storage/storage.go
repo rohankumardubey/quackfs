@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
-	"github.com/google/uuid"
 )
 
 type snapshotLayer struct {
@@ -658,91 +657,6 @@ func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*snapsh
 	return layers, nil
 }
 
-// deleteFile removes a file and its associated layers and chunks from the database within a transaction.
-// ! FIX(vinimdocarmo): this shouldn't touch the existing layers, but create a new one marking file as deleted.
-func (sm *Manager) DeleteFile(name string) error {
-	sm.log.Debug("Deleting file and its associated data from metadata store", "name", name)
-
-	// Begin a transaction
-	tx, err := sm.db.Begin()
-	if err != nil {
-		sm.log.Error("Failed to begin transaction", "error", err)
-		return err
-	}
-
-	// Ensure the transaction is rolled back in case of an error
-	defer func() {
-		if p := recover(); p != nil {
-			tx.Rollback()
-			panic(p) // re-throw panic after Rollback
-		} else if err != nil {
-			sm.log.Error("Transaction failed, rolling back", "error", err)
-			tx.Rollback()
-		} else {
-			err = tx.Commit()
-			if err != nil {
-				sm.log.Error("Failed to commit transaction", "error", err)
-			}
-		}
-	}()
-
-	// When the DuckDB WAL file is delete it means a CHECKPOINT is being made
-	// which in this case we want to commit the changes to the database
-	// in a new version tag.
-	if strings.HasSuffix(name, ".wal") {
-		version := uuid.New().String()
-		database := strings.TrimSuffix(name, ".wal")
-		sm.log.Info("WAL is being deleted, commiting database checkpoint", "name", database, "version", version)
-		err = sm.Checkpoint(database, version)
-		if err != nil {
-			sm.log.Error("Failed to checkpoint WAL file", "error", err)
-			return err
-		}
-	}
-
-	// Retrieve the file ID
-	fileID, err := sm.GetFileIDByName(name, withTx(tx))
-	if err != nil {
-		sm.log.Error("Failed to retrieve file ID", "name", name, "error", err)
-		return err
-	}
-
-	if fileID == 0 {
-		sm.log.Error("File not found, nothing to delete", "name", name)
-		return nil
-	}
-
-	// Delete all chunks associated with the file's layers
-	deleteChunksQuery := `DELETE FROM chunks WHERE snapshot_layer_id IN (SELECT id FROM snapshot_layers WHERE file_id = $1);`
-	_, err = tx.Exec(deleteChunksQuery, fileID)
-	if err != nil {
-		sm.log.Error("Failed to delete chunks for file", "name", name, "error", err)
-		return err
-	}
-
-	// Delete all layers associated with the file
-	deleteLayersQuery := `DELETE FROM snapshot_layers WHERE file_id = $1;`
-	_, err = tx.Exec(deleteLayersQuery, fileID)
-	if err != nil {
-		sm.log.Error("Failed to delete layers for file", "name", name, "error", err)
-		return err
-	}
-
-	// Delete the file itself
-	deleteFileQuery := `DELETE FROM files WHERE id = $1;`
-	_, err = tx.Exec(deleteFileQuery, fileID)
-	if err != nil {
-		sm.log.Error("Failed to delete file", "name", name, "error", err)
-		return err
-	}
-
-	// Remove any active layers for this file
-	delete(sm.activeLayers, fileID)
-
-	sm.log.Info("File and its associated data deleted successfully", "name", name)
-	return nil
-}
-
 func (sm *Manager) Checkpoint(filename string, version string) error {
 	sm.mu.Lock()         // Lock before accessing activeLayers
 	defer sm.mu.Unlock() // Ensure unlock when function returns
@@ -750,6 +664,10 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 	// Get the file ID from the file name
 	fileID, err := sm.GetFileIDByName(filename)
 	if err != nil {
+		if err == ErrNotFound {
+			sm.log.Warn("File not found, nothing to checkpoint", "filename", filename)
+			return nil
+		}
 		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return fmt.Errorf("failed to get file ID: %w", err)
 	}

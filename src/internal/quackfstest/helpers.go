@@ -1,4 +1,4 @@
-package difffstest
+package quackfstest
 
 import (
 	"database/sql"
@@ -7,8 +7,8 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"github.com/vinimdocarmo/difffs/src/internal/logger"
-	"github.com/vinimdocarmo/difffs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/src/internal/logger"
+	"github.com/vinimdocarmo/quackfs/src/internal/storage"
 )
 
 func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {

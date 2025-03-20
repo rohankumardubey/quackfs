@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS files (
 -- Create versions table
 CREATE TABLE IF NOT EXISTS versions (
     id SERIAL PRIMARY KEY,
-    tag TEXT NOT NULL
+    tag TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create snapshot_layers table
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     data BYTEA NOT NULL,
     layer_range INT8RANGE NOT NULL,
     file_range INT8RANGE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- for any given snapshot_layer_id, there should be no overlapping layer_ranges
     EXCLUDE USING GIST (snapshot_layer_id WITH =, layer_range WITH &&)
 ); 

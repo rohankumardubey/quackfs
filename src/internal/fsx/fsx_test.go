@@ -2,8 +2,8 @@ package fsx
 
 import (
 	"context"
-	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,9 +13,9 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vinimdocarmo/difffs/src/internal/difffstest"
-	"github.com/vinimdocarmo/difffs/src/internal/logger"
-	"github.com/vinimdocarmo/difffs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/src/internal/logger"
+	"github.com/vinimdocarmo/quackfs/src/internal/quackfstest"
+	"github.com/vinimdocarmo/quackfs/src/internal/storage"
 )
 
 func TestFuseReadWrite(t *testing.T) {
@@ -24,7 +24,7 @@ func TestFuseReadWrite(t *testing.T) {
 	defer cleanup()
 
 	// Create the file first to ensure it exists
-	filePath := filepath.Join(mountDir, "test_file.txt")
+	filePath := filepath.Join(mountDir, "test_file.duckdb")
 	createFile, err := os.Create(filePath)
 	require.NoError(t, err, "Failed to create test file")
 	require.NoError(t, createFile.Close(), "Failed to close file after creation")
@@ -62,55 +62,11 @@ func TestFuseReadWrite(t *testing.T) {
 	}
 }
 
-func TestFuseFileRemoval(t *testing.T) {
-	// Create and mount the FUSE filesystem
-	mountDir, sm, cleanup, errChan := setupFuseMount(t)
-	defer cleanup()
-
-	// Create a test file
-	testFileName := "test_removal_file.txt"
-	filePath := filepath.Join(mountDir, testFileName)
-
-	// Create the file
-	f, err := os.Create(filePath)
-	require.NoError(t, err, "Failed to create test file")
-
-	// Write some data to the file
-	_, err = f.WriteString("This is a test file that will be removed")
-	require.NoError(t, err, "Failed to write to test file")
-	require.NoError(t, f.Close(), "Failed to close file")
-
-	// Verify the file exists
-	_, err = os.Stat(filePath)
-	require.NoError(t, err, "File should exist before removal")
-
-	// Remove the file
-	err = os.Remove(filePath)
-	require.NoError(t, err, "Failed to remove file")
-
-	// Verify the file no longer exists
-	_, err = os.Stat(filePath)
-	require.Error(t, err, "File should not exist after removal")
-	require.True(t, os.IsNotExist(err), "Error should indicate file does not exist")
-
-	// Verify the file was removed from the database
-	_, err = sm.GetFileIDByName(testFileName)
-	require.True(t, errors.Is(err, storage.ErrNotFound), "Error should indicate file does not exist")
-
-	// Check for any errors from the FUSE server
-	select {
-	case err := <-errChan:
-		require.NoError(t, err, "FUSE server reported an error")
-	default:
-		// No error, which is good
-	}
-}
-
 // WaitForMount attempts to create a file in the mount directory to verify mount is ready
 func waitForMount(mountDir string, t *testing.T) {
 	const attempts = 10
 	for range attempts {
-		testFile := filepath.Join(mountDir, "test_mount_ready")
+		testFile := filepath.Join(mountDir, "test_mount_ready.duckdb")
 		f, err := os.Create(testFile)
 		if err == nil {
 			f.Close()
@@ -131,7 +87,7 @@ func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error)
 		t.Fatalf("TempDir error: %v", err)
 	}
 
-	sm, smCleanup := difffstest.SetupStorageManager(t)
+	sm, smCleanup := quackfstest.SetupStorageManager(t)
 
 	// Create a test log
 	log := logger.New(os.Stderr)
@@ -148,7 +104,7 @@ func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error)
 
 	// Serve the filesystem in a goroutine
 	go func() {
-		errChan <- fs.Serve(conn, NewFS(sm, log))
+		errChan <- fs.Serve(conn, NewFS(sm, log, "/tmp"))
 	}()
 
 	// Create cleanup function
@@ -172,7 +128,7 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	defer cleanup()
 
 	// Create a test file
-	filename := "test_write_beyond.txt"
+	filename := "test_write_beyond.duckdb"
 	initialContent := []byte("initial")
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err)
@@ -238,7 +194,7 @@ func TestFileEmptyWriteNonZeroOffset(t *testing.T) {
 	defer cleanup()
 
 	// Create a test file
-	filename := "test_empty_write.txt"
+	filename := "test_empty_write.duckdb"
 	fileID, err := sm.InsertFile(filename)
 	require.NoError(t, err)
 	require.NotZero(t, fileID)
@@ -257,7 +213,7 @@ func TestFileEmptyWriteNonZeroOffset(t *testing.T) {
 
 // setupTestEnvironment creates a storage manager and logger for testing
 func setupTestEnvironment(t *testing.T) (*storage.Manager, *log.Logger, func()) {
-	sm, smCleanup := difffstest.SetupStorageManager(t)
+	sm, smCleanup := quackfstest.SetupStorageManager(t)
 	log := logger.New(os.Stderr)
 
 	cleanup := func() {
@@ -265,4 +221,59 @@ func setupTestEnvironment(t *testing.T) (*storage.Manager, *log.Logger, func()) 
 	}
 
 	return sm, log, cleanup
+}
+
+// TestStorageCheckpointOnDuckDBCheckpoint tests removal of .duckdb.wal files with checkpointing
+func TestStorageCheckpointOnDuckDBCheckpoint(t *testing.T) {
+	// Create and mount the FUSE filesystem
+	mountDir, _, cleanup, errChan := setupFuseMount(t)
+	defer cleanup()
+
+	// Create a DuckDB database file path in the mounted filesystem
+	dbFile := "test_db.duckdb"
+	dbFilePath := filepath.Join(mountDir, dbFile)
+
+	// Create a simple table and insert some data to generate WAL file
+	createTableCmd := exec.Command("duckdb", dbFilePath, "-c",
+		`
+		PRAGMA disable_checkpoint_on_shutdown;
+		CREATE TABLE test_table(id INTEGER, value VARCHAR);
+		INSERT INTO test_table VALUES (1, 'test value 1'), (2, 'test value 2');
+		`)
+	output, err := createTableCmd.CombinedOutput()
+	require.NoError(t, err, "Failed to create table: %s", string(output))
+
+	// The WAL file should now exist
+	walFile := dbFile + ".wal"
+	walFilePath := filepath.Join(mountDir, walFile)
+	_, err = os.Stat(walFilePath)
+	require.NoError(t, err, "WAL file should exist after database operations")
+
+	// Now run a CHECKPOINT command that should flush the WAL to the database and delelte it
+	checkpointCmd := exec.Command("duckdb", dbFilePath, "-c", "CHECKPOINT;")
+	output, err = checkpointCmd.CombinedOutput()
+	require.NoError(t, err, "Failed to checkpoint: %s", string(output))
+
+	// WAL file should not exist anymore
+	_, err = os.Stat(walFilePath)
+	require.Error(t, err, "WAL file should not exist after checkpoint")
+	require.True(t, os.IsNotExist(err), "Error should indicate WAL file does not exist")
+
+	// Now try to read from the database to verify it's still functional
+	// The data should have been properly saved during checkpoint
+	queryCmd := exec.Command("duckdb", dbFilePath, "-c", "SELECT * FROM test_table;")
+	output, err = queryCmd.CombinedOutput()
+	require.NoError(t, err, "Failed to query database: %s", string(output))
+
+	// Verify the output contains our test value
+	require.Contains(t, string(output), "test value 1", "Database should contain our test data")
+	require.Contains(t, string(output), "test value 2", "Database should contain our test data")
+
+	// Check for any errors from the FUSE server
+	select {
+	case err := <-errChan:
+		require.NoError(t, err, "FUSE server reported an error")
+	default:
+		// No error, which is good
+	}
 }

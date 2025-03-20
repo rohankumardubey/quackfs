@@ -10,39 +10,45 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/charmbracelet/log"
-	"github.com/vinimdocarmo/difffs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/src/internal/storage"
 )
 
 // FS implements the FUSE filesystem.
 type FS struct {
 	sm  *storage.Manager
 	log *log.Logger
+	wm  *storage.WALManager
 }
 
 // Check interface satisfied
 var _ fs.FS = (*FS)(nil)
 
-func NewFS(sm *storage.Manager, log *log.Logger) *FS {
+func NewFS(sm *storage.Manager, log *log.Logger, walPath string) *FS {
 	fsLog := log.With()
 	fsLog.SetPrefix("📄 fsx")
+
+	walManager := storage.NewWALManager(walPath, sm, fsLog)
 
 	return &FS{
 		sm:  sm,
 		log: fsLog,
+		wm:  walManager,
 	}
 }
 
 func (fs *FS) Root() (fs.Node, error) {
 	return Dir{
-		sm:  fs.sm,
-		log: fs.log,
+		sm:         fs.sm,
+		log:        fs.log,
+		walManager: fs.wm,
 	}, nil
 }
 
 // Dir represents the root directory.
 type Dir struct {
-	sm  *storage.Manager
-	log *log.Logger
+	sm         *storage.Manager
+	log        *log.Logger
+	walManager *storage.WALManager
 }
 
 var _ fs.Node = (*Dir)(nil)
@@ -66,7 +72,54 @@ func (dir Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 func (dir Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	dir.log.Debug("Looking up file", "name", name)
 
-	// Get file size
+	// Check if the file has a valid extension
+	if !checkValidExtension(name) {
+		dir.log.Error("File has invalid extension", "name", name)
+		return nil, syscall.ENOENT
+	}
+
+	// For .duckdb.wal files, check if they exist in the filesystem
+	if storage.IsWALFile(name) {
+		exists, err := dir.walManager.Exists(name)
+		if err != nil {
+			dir.log.Error("Failed to check if WAL file exists", "name", name, "error", err)
+			return nil, err
+		}
+
+		if !exists {
+			return nil, syscall.ENOENT
+		}
+
+		// Get file info
+		size, err := dir.walManager.GetFileSize(name)
+		if err != nil {
+			dir.log.Error("Failed to get WAL file size", "name", name, "error", err)
+			return nil, err
+		}
+
+		modTime, err := dir.walManager.GetModTime(name)
+		if err != nil {
+			dir.log.Error("Failed to get WAL file mod time", "name", name, "error", err)
+			return nil, err
+		}
+
+		// Create a new file object for the .duckdb.wal file
+		now := time.Now()
+		file := &File{
+			name:     name,
+			created:  modTime,
+			modified: modTime,
+			accessed: now,
+			fileSize: size,
+			sm:       dir.sm,
+			log:      dir.log,
+			wm:       dir.walManager,
+		}
+
+		return file, nil
+	}
+
+	// Get file size for regular files
 	size, err := dir.sm.SizeOf(name)
 	if err != nil {
 		if err == storage.ErrNotFound {
@@ -85,6 +138,7 @@ func (dir Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		fileSize: size,
 		sm:       dir.sm,
 		log:      dir.log,
+		wm:       dir.walManager,
 	}
 
 	return file, nil
@@ -105,6 +159,17 @@ func (dir Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		all = append(all, fuse.Dirent{Name: file.Name, Type: fuse.DT_File})
 	}
 
+	// Add .duckdb.wal files from the WAL manager
+	walFiles, err := dir.walManager.ListWALFiles()
+	if err != nil {
+		dir.log.Error("Failed to list WAL files", "error", err)
+		return nil, err
+	}
+
+	for _, walFile := range walFiles {
+		all = append(all, fuse.Dirent{Name: walFile, Type: fuse.DT_File})
+	}
+
 	dir.log.Debug("Directory read complete", "totalFiles", len(all))
 	return all, nil
 }
@@ -119,14 +184,24 @@ func (dir Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		return syscall.ENOSYS // Operation not supported
 	}
 
-	// For files, we need to delete the file from our database
-	err := dir.sm.DeleteFile(req.Name)
+	if !checkValidExtension(req.Name) {
+		dir.log.Error("File has invalid extension", "name", req.Name)
+		return syscall.EINVAL
+	}
+
+	if !storage.IsWALFile(req.Name) {
+		dir.log.Error("File removal is only supported for WAL files for now", "name", req.Name)
+		return syscall.ENOSYS
+	}
+
+	// For .duckdb.wal files, use the WAL manager to remove them
+	err := dir.walManager.Remove(req.Name)
 	if err != nil {
-		dir.log.Error("Failed to remove file from database", "name", req.Name, "error", err)
+		dir.log.Error("Failed to remove WAL file", "name", req.Name, "error", err)
 		return err
 	}
 
-	dir.log.Info("File removed successfully", "name", req.Name)
+	dir.log.Info("WAL file removed successfully", "name", req.Name)
 	return nil
 }
 
@@ -134,7 +209,40 @@ func (dir Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 func (dir Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
 	dir.log.Info("Creating file", "filename", req.Name, "flags", req.Flags, "mode", req.Mode)
 
-	// Insert the file into the database
+	// Check if the file has a valid extension
+	if !checkValidExtension(req.Name) {
+		dir.log.Info("Rejecting file with invalid extension", "filename", req.Name)
+		return nil, nil, syscall.EINVAL
+	}
+
+	// For .duckdb.wal files, use the WAL manager to create them
+	if storage.IsWALFile(req.Name) {
+		dir.log.Info("Creating WAL file", "filename", req.Name)
+
+		err := dir.walManager.Create(req.Name)
+		if err != nil {
+			dir.log.Error("Failed to create WAL file", "name", req.Name, "error", err)
+			return nil, nil, err
+		}
+
+		// Create a new file object
+		now := time.Now()
+		walFile := &File{
+			name:     req.Name,
+			created:  now,
+			modified: now,
+			accessed: now,
+			fileSize: 0,
+			sm:       dir.sm,
+			log:      dir.log,
+			wm:       dir.walManager,
+		}
+
+		dir.log.Debug("WAL file created successfully", "filename", req.Name)
+		return walFile, walFile, nil
+	}
+
+	// Otherwise, it's a database file, so we need to insert it into the storage manager
 	_, err := dir.sm.InsertFile(req.Name)
 	if err != nil {
 		dir.log.Error("Failed to insert file into database", "name", req.Name, "error", err)
@@ -151,10 +259,18 @@ func (dir Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 		fileSize: 0,
 		sm:       dir.sm,
 		log:      dir.log,
+		wm:       dir.walManager,
 	}
 
 	dir.log.Debug("File created successfully", "filename", req.Name)
 	return file, file, nil
+}
+
+// checkValidExtension checks if the file has a valid extension (.duckdb or .duckdb.wal)
+func checkValidExtension(filename string) bool {
+	return filename == "duckdb.wal" || filename == "duckdb" || filename == "tmp" ||
+		(len(filename) > 0 && (filename[0] != '.' && (filename[len(filename)-7:] == ".duckdb" ||
+			filename[len(filename)-11:] == ".duckdb.wal")))
 }
 
 // File represents our file whose contents are stored in the layer manager.
@@ -166,23 +282,60 @@ type File struct {
 	fileSize uint64
 	sm       *storage.Manager
 	log      *log.Logger
+	wm       *storage.WALManager
 }
 
 var _ fs.Node = (*File)(nil)
 var _ fs.NodeOpener = (*File)(nil)
 var _ fs.NodeFsyncer = (*File)(nil)
-var _ fs.NodeGetxattrer = (*File)(nil)
-var _ fs.NodeListxattrer = (*File)(nil)
-var _ fs.NodeSetxattrer = (*File)(nil)
-var _ fs.NodeRemovexattrer = (*File)(nil)
-var _ fs.NodeReadlinker = (*File)(nil)
 var _ fs.NodeRemover = (*File)(nil)
-var _ fs.NodeSetattrer = (*File)(nil)
 
 // Attr sets the file attributes
 func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	f.log.Debug("Getting file attributes", "name", f.name)
 
+	if !checkValidExtension(f.name) {
+		f.log.Error("File has invalid extension", "name", f.name)
+		return syscall.EINVAL
+	}
+
+	// For .duckdb.wal files, get attributes from the WAL manager
+	if storage.IsWALFile(f.name) {
+		size, err := f.wm.GetFileSize(f.name)
+		if err != nil {
+			f.log.Error("Failed to get WAL file size", "name", f.name, "error", err)
+			return err
+		}
+
+		modTime, err := f.wm.GetModTime(f.name)
+		if err != nil {
+			// If file doesn't exist yet, return default attributes
+			if os.IsNotExist(err) {
+				a.Mode = 0644
+				a.Size = 0
+				a.Mtime = f.modified
+				a.Ctime = f.created
+				a.Atime = f.accessed
+				a.Valid = 1 * time.Second
+				return nil
+			}
+			f.log.Error("Failed to get WAL file mod time", "name", f.name, "error", err)
+			return err
+		}
+
+		// Set attributes from file info
+		a.Mode = 0644
+		a.Size = size
+		a.Mtime = modTime
+		a.Ctime = modTime
+		a.Atime = time.Now() // OS doesn't typically track atime precisely
+		a.Valid = 1 * time.Second
+
+		f.log.Debug("Retrieved WAL file attributes", "name", f.name, "size", a.Size)
+		return nil
+	}
+
+	// For regular files, get size from the storage manager
 	size, err := f.sm.SizeOf(f.name)
 	if err != nil {
 		f.log.Error("Failed to get file size", "name", f.name, "error", err)
@@ -208,7 +361,25 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
 	f.log.Debug("Reading file", "name", f.name, "offset", req.Offset, "size", req.Size)
 
-	// Read from the layer manager for all files
+	if !checkValidExtension(f.name) {
+		f.log.Error("File has invalid extension", "name", f.name)
+		return syscall.EINVAL
+	}
+
+	// For .duckdb.wal files, use the WAL manager
+	if storage.IsWALFile(f.name) {
+		f.log.Debug("Reading WAL file", "name", f.name)
+		data, err := f.wm.Read(f.name, uint64(req.Offset), uint64(req.Size))
+		if err != nil {
+			f.log.Error("Failed to read WAL file", "name", f.name, "error", err)
+			return err
+		}
+		resp.Data = data
+		f.log.Debug("Read successful for WAL file", "name", f.name, "bytesRead", len(resp.Data))
+		return nil
+	}
+
+	// Read from the layer manager for all other files
 	data, err := f.sm.ReadFile(f.name, uint64(req.Offset), uint64(req.Size))
 	if err != nil {
 		f.log.Error("Failed to read data", "name", f.name, "error", err)
@@ -224,12 +395,33 @@ func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
 	f.log.Debug("Writing to file", "name", f.name, "size", len(req.Data), "offset", req.Offset, "fileFlags", req.FileFlags)
 
+	if !checkValidExtension(f.name) {
+		f.log.Error("File has invalid extension", "name", f.name)
+		return syscall.EINVAL
+	}
+
 	// For consistency, we'll make a copy of the data to prevent races
 	dataCopy := make([]byte, len(req.Data))
 	copy(dataCopy, req.Data)
 
-	// Use the layer manager to handle the write operation
-	// Pass the file name to the layer manager
+	// For .duckdb.wal files, use the WAL manager
+	if storage.IsWALFile(f.name) {
+		f.log.Debug("Writing WAL file", "name", f.name)
+		bytesWritten, err := f.wm.Write(f.name, dataCopy, uint64(req.Offset))
+		if err != nil {
+			f.log.Error("Failed to write WAL file", "name", f.name, "error", err)
+			return fmt.Errorf("failed to write WAL data: %v", err)
+		}
+
+		f.fileSize = uint64(req.Offset) + uint64(bytesWritten)
+		f.modified = time.Now()
+
+		resp.Size = bytesWritten
+		f.log.Debug("Write successful for WAL file", "name", f.name, "bytesWritten", resp.Size)
+		return nil
+	}
+
+	// Use the layer manager to handle the write operation for all other files
 	err := f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
@@ -244,40 +436,6 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	return nil
 }
 
-// Setattr implements the fs.NodeSetattrer interface
-func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
-	f.log.Debug("Setting file attributes", "name", f.name, "valid", req.Valid)
-
-	// Update the times if specified in the request
-	if req.Valid.Atime() {
-		f.accessed = req.Atime
-		f.log.Debug("Updated atime", "name", f.name, "atime", req.Atime)
-	}
-
-	if req.Valid.Mtime() {
-		f.modified = req.Mtime
-		f.log.Debug("Updated mtime", "name", f.name, "mtime", req.Mtime)
-	}
-
-	if req.Valid.Size() {
-		currSize, err := f.sm.SizeOf(f.name)
-		if err != nil {
-			f.log.Error("Failed to get file size", "name", f.name, "error", err)
-			return err
-		}
-
-		if currSize > req.Size {
-			f.log.Warn("TODO: truncate file", "name", f.name, "size", req.Size)
-		} else if currSize < req.Size {
-			f.log.Warn("TODO: extend file", "name", f.name, "size", req.Size)
-		}
-	}
-
-	f.log.Debug("File attributes updated successfully", "name", f.name)
-
-	return nil
-}
-
 func (f *File) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
 	f.log.Debug("Releasing file", "name", f.name, "flags", req.Flags)
 	return nil
@@ -285,44 +443,39 @@ func (f *File) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
 
 func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 	f.log.Debug("Syncing file", "name", f.name)
-	return nil
-}
 
-func (f *File) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, resp *fuse.GetxattrResponse) error {
-	f.log.Debug("Getting extended attribute", "name", f.name, "attr", req.Name)
-	return nil
-}
+	// For WAL files, we need to sync them to disk
+	if storage.IsWALFile(f.name) {
+		err := f.wm.Sync(f.name)
+		if err != nil {
+			f.log.Error("Failed to sync WAL file", "name", f.name, "error", err)
+			return err
+		}
+	}
 
-func (f *File) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, resp *fuse.ListxattrResponse) error {
-	f.log.Debug("Listing extended attributes", "name", f.name)
 	return nil
-}
-
-func (f *File) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
-	f.log.Debug("Setting extended attribute", "name", f.name, "attr", req.Name)
-	return nil
-}
-
-func (f *File) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
-	f.log.Debug("Removing extended attribute", "name", f.name, "attr", req.Name)
-	return nil
-}
-
-func (f *File) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
-	f.log.Debug("Reading symlink", "name", f.name)
-	return "", syscall.EIO
 }
 
 func (f *File) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	f.log.Debug("Removing file", "name", f.name)
 
-	// Remove the file from the database
-	err := f.sm.DeleteFile(f.name)
+	if !checkValidExtension(f.name) {
+		f.log.Error("File has invalid extension", "name", f.name)
+		return syscall.EINVAL
+	}
+
+	if !storage.IsWALFile(f.name) {
+		f.log.Error("File removal is only supported for WAL files for now", "name", f.name)
+		return syscall.EINVAL
+	}
+
+	// For .duckdb.wal files, use the WAL manager to remove them
+	err := f.wm.Remove(f.name)
 	if err != nil {
-		f.log.Error("Failed to remove file from database", "name", f.name, "error", err)
+		f.log.Error("Failed to remove WAL file", "name", f.name, "error", err)
 		return err
 	}
 
-	f.log.Info("File removed successfully", "name", f.name)
+	f.log.Info("WAL file removed successfully", "name", f.name)
 	return nil
 }

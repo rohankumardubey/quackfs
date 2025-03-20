@@ -1,4 +1,4 @@
-module github.com/vinimdocarmo/difffs
+module github.com/vinimdocarmo/quackfs
 
 go 1.23.4
 

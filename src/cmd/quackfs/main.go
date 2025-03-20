@@ -9,9 +9,9 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	_ "github.com/lib/pq"
-	"github.com/vinimdocarmo/difffs/src/internal/fsx"
-	"github.com/vinimdocarmo/difffs/src/internal/logger"
-	"github.com/vinimdocarmo/difffs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/src/internal/fsx"
+	"github.com/vinimdocarmo/quackfs/src/internal/logger"
+	"github.com/vinimdocarmo/quackfs/src/internal/storage"
 )
 
 func main() {
@@ -22,27 +22,31 @@ func main() {
 	flag.Parse()
 
 	if *mountpoint == "" {
-		log.Info("Usage: ./difffs -mount <mountpoint>")
+		log.Info("Usage: ./quackfs -mount <mountpoint>")
 		os.Exit(1)
 	}
 
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatal("Failed to get home directory", "error", err)
+	}
+
+	walPath := flag.String("wal-path", homeDir, "Path to the WAL file")
+	flag.Parse()
+
 	fmt.Println(`
-
-██████╗░██╗███████╗███████╗███████╗░██████╗
-██╔══██╗██║██╔════╝██╔════╝██╔════╝██╔════╝
-██║░░██║██║█████╗░░█████╗░░█████╗░░╚█████╗░
-██║░░██║██║██╔══╝░░██╔══╝░░██╔══╝░░░╚═══██╗
-██████╔╝██║██║░░░░░██║░░░░░██║░░░░░██████╔╝
-╚═════╝░╚═╝╚═╝░░░░░╚═╝░░░░░╚═╝░░░░░╚═════╝░
-Differential Storage System
-
+  __
+>(o )___
+ (  ._> /
+  '---'
+Differential Storage System for DuckDB
 	`)
 
 	host := getEnvOrDefault("POSTGRES_HOST", "localhost")
 	port := getEnvOrDefault("POSTGRES_PORT", "5432")
 	user := getEnvOrDefault("POSTGRES_USER", "postgres")
 	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
-	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
+	dbname := getEnvOrDefault("POSTGRES_DB", "quackfs")
 
 	log.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
 
@@ -59,17 +63,18 @@ Differential Storage System
 	sm := storage.NewManager(db, log)
 
 	// Mount the FUSE filesystem.
-	c, err := fuse.Mount(*mountpoint, fuse.FSName("difffs"))
+	c, err := fuse.Mount(*mountpoint, fuse.FSName("quackfs"))
 	if err != nil {
 		log.Fatal("Failed to mount FUSE", "error", err)
 	}
 	defer c.Close()
 
 	log.Info("FUSE filesystem mounted", "mountpoint", *mountpoint)
+	log.Info("Storing WAL file in", "path", *walPath)
 	log.Info("Using PostgreSQL for persistence", "host", os.Getenv("POSTGRES_HOST"))
 
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
-	if err := fs.Serve(c, fsx.NewFS(sm, log)); err != nil {
+	if err := fs.Serve(c, fsx.NewFS(sm, log, *walPath)); err != nil {
 		log.Fatal("Failed to serve FUSE FS", "error", err)
 	}
 }

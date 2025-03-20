@@ -9,8 +9,8 @@ import (
 
 	log "github.com/charmbracelet/log"
 	_ "github.com/lib/pq"
-	"github.com/vinimdocarmo/difffs/src/internal/logger"
-	"github.com/vinimdocarmo/difffs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/src/internal/logger"
+	"github.com/vinimdocarmo/quackfs/src/internal/storage"
 )
 
 func main() {
@@ -261,7 +261,7 @@ func newDB(log *log.Logger) *sql.DB {
 	port := getEnvOrDefault("POSTGRES_PORT", "5432")
 	user := getEnvOrDefault("POSTGRES_USER", "postgres")
 	password := getEnvOrDefault("POSTGRES_PASSWORD", "password")
-	dbname := getEnvOrDefault("POSTGRES_DB", "difffs")
+	dbname := getEnvOrDefault("POSTGRES_DB", "quackfs")
 
 	log.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
 

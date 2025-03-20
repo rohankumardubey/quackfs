@@ -7,12 +7,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vinimdocarmo/difffs/src/internal/difffstest"
-	"github.com/vinimdocarmo/difffs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/src/internal/quackfstest"
+	"github.com/vinimdocarmo/quackfs/src/internal/storage"
 )
 
 func TestWriteReadActiveLayer(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_write_read" // Unique file name for testing
@@ -45,7 +45,7 @@ func TestWriteReadActiveLayer(t *testing.T) {
 }
 
 func TestCheckpointingNewActiveLayer(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_checkpoint_layer" // Unique file name for testing
@@ -61,7 +61,7 @@ func TestCheckpointingNewActiveLayer(t *testing.T) {
 	err = sm.Checkpoint(filename, "v1")
 	require.NoError(t, err, "Checkpoint failed")
 
-	db := difffstest.SetupDB(t)
+	db := quackfstest.SetupDB(t)
 	defer db.Close()
 
 	input2 := []byte("data2")
@@ -74,7 +74,7 @@ func TestCheckpointingNewActiveLayer(t *testing.T) {
 }
 
 func TestReadFromActiveLayer(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_read_active" // Unique file name for testing
@@ -115,7 +115,7 @@ func TestReadFromActiveLayer(t *testing.T) {
 }
 
 func TestPartialRead(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_partial_read" // Unique file name for testing
@@ -137,7 +137,7 @@ func TestPartialRead(t *testing.T) {
 }
 
 func TestGetDataRangeByFileName(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_get_data_range"
@@ -163,7 +163,7 @@ func TestGetDataRangeByFileName(t *testing.T) {
 
 func TestStorageManagerPersistence(t *testing.T) {
 	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -198,7 +198,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 	assert.Equal(t, expectedContent, fullContent, "Full content should match expected")
 
 	// Now create a new storage manager instance to simulate restarting the application
-	sm2, cleanup2 := difffstest.SetupStorageManager(t)
+	sm2, cleanup2 := quackfstest.SetupStorageManager(t)
 	defer cleanup2()
 
 	// Verify the checkpointed data is still correct (should include data1 and data2)
@@ -226,7 +226,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 	require.NoError(t, err, "Failed to commit third layer")
 
 	// Create yet another storage manager to verify all three checkpoints persist
-	sm3, cleanup3 := difffstest.SetupStorageManager(t)
+	sm3, cleanup3 := quackfstest.SetupStorageManager(t)
 	defer cleanup3()
 
 	// Verify all checkpointed data persists (should include data1, data2, and data3)
@@ -239,7 +239,7 @@ func TestStorageManagerPersistence(t *testing.T) {
 
 func TestFuseScenario(t *testing.T) {
 	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -282,7 +282,7 @@ func TestFuseScenario(t *testing.T) {
 	require.NoError(t, err, "Failed to commit second layer")
 
 	// Create a new storage manager to simulate restarting
-	sm2, cleanup2 := difffstest.SetupStorageManager(t)
+	sm2, cleanup2 := quackfstest.SetupStorageManager(t)
 	defer cleanup2()
 
 	// Verify checkpointed data persists
@@ -302,7 +302,7 @@ func TestFuseScenario(t *testing.T) {
 	assert.Equal(t, finalCombinedData, readFinalData, "Final combined data should match expected")
 
 	// Create a third storage manager without checkpointing
-	sm3, cleanup3 := difffstest.SetupStorageManager(t)
+	sm3, cleanup3 := quackfstest.SetupStorageManager(t)
 	defer cleanup3()
 
 	// Verify only the checkpointed data persists (without the final segment)
@@ -313,7 +313,7 @@ func TestFuseScenario(t *testing.T) {
 
 func TestWriteBeyondFileSize(t *testing.T) {
 	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -336,7 +336,7 @@ func TestWriteBeyondFileSize(t *testing.T) {
 
 func TestCalculateVirtualFileSize(t *testing.T) {
 	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -387,76 +387,8 @@ func TestCalculateVirtualFileSize(t *testing.T) {
 	assert.Equal(t, expectedNewSize, newSize, "Updated file size should reflect the new highest offset + data length")
 }
 
-func TestDeleteFile(t *testing.T) {
-	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	// Create multiple test files
-	filenames := []string{
-		"testfile_delete_1",
-		"testfile_delete_2",
-		"testfile_delete_3",
-	}
-
-	// Insert all files
-	for _, filename := range filenames {
-		_, err := sm.InsertFile(filename)
-		require.NoError(t, err, "Failed to insert file: %s", filename)
-
-		// Write some data to each file
-		err = sm.WriteFile(filename, []byte("data for "+filename), 0)
-		require.NoError(t, err, "Failed to write to file: %s", filename)
-	}
-
-	// Get all files and verify count
-	files, err := sm.GetAllFiles()
-	require.NoError(t, err, "Failed to get all files")
-	assert.Equal(t, len(filenames), len(files), "Should have the expected number of files")
-
-	// Delete the second file
-	err = sm.DeleteFile(filenames[1])
-	require.NoError(t, err, "Failed to delete file")
-
-	// Get all files again and verify count
-	filesAfterDelete, err := sm.GetAllFiles()
-	require.NoError(t, err, "Failed to get all files after delete")
-	assert.Equal(t, len(filenames)-1, len(filesAfterDelete), "Should have one less file after deletion")
-
-	// Verify the deleted file is gone
-	var deletedFileFound bool
-	for _, file := range filesAfterDelete {
-		if file.Name == filenames[1] {
-			deletedFileFound = true
-			break
-		}
-	}
-	assert.False(t, deletedFileFound, "Deleted file should not be found")
-
-	// Verify the other files still exist
-	var file1Found, file3Found bool
-	for _, file := range filesAfterDelete {
-		if file.Name == filenames[0] {
-			file1Found = true
-		}
-		if file.Name == filenames[2] {
-			file3Found = true
-		}
-	}
-	assert.True(t, file1Found, "First file should still exist")
-	assert.True(t, file3Found, "Third file should still exist")
-
-	// Try to read from the deleted file
-	_, err = sm.ReadFile(filenames[1], 0, 10)
-	assert.Error(t, err, "Reading from deleted file should return an error")
-
-	// Try to write to the deleted file
-	err = sm.WriteFile(filenames[1], []byte("new data"), 0)
-	assert.Error(t, err, "Writing to deleted file should return an error")
-}
-
 func TestExampleWorkflow(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_example_workflow"
@@ -491,7 +423,7 @@ func TestExampleWorkflow(t *testing.T) {
 
 func TestWriteToSameOffsetTwice(t *testing.T) {
 	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -553,7 +485,7 @@ func TestWriteToSameOffsetTwice(t *testing.T) {
 
 func TestVersionedLayers(t *testing.T) {
 	// Setup a storage manager
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -586,7 +518,7 @@ func TestVersionedLayers(t *testing.T) {
 	require.NoError(t, err, "Failed to load layers for file")
 	require.Equal(t, 2, len(layers), "Expected two layers (v1, v2)")
 
-	db := difffstest.SetupDB(t)
+	db := quackfstest.SetupDB(t)
 	defer db.Close()
 
 	// Get version IDs
@@ -615,7 +547,7 @@ func TestVersionedLayers(t *testing.T) {
 }
 
 func TestGetDataRangeWithVersion(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	// Create a test file
@@ -678,7 +610,7 @@ func TestWithinAndOverlappingWrites(t *testing.T) {
 	[0, 4096):   	***************
 	*/
 
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_within_and_overlapping_writes"
@@ -766,57 +698,8 @@ func TestWithinAndOverlappingWrites(t *testing.T) {
 	}
 }
 
-func TestWALDeletionCheckpoint(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
-	defer cleanup()
-
-	// Create a test database file
-	dbFilename := "test.db"
-	_, err := sm.InsertFile(dbFilename)
-	require.NoError(t, err, "Failed to insert database file")
-
-	// Write some initial data
-	data1 := []byte("initial data")
-	err = sm.WriteFile(dbFilename, data1, 0)
-	require.NoError(t, err, "Failed to write initial data")
-
-	// Create and write to WAL file
-	walFilename := dbFilename + ".wal"
-	_, err = sm.InsertFile(walFilename)
-	require.NoError(t, err, "Failed to insert WAL file")
-
-	walData := []byte("wal data")
-	err = sm.WriteFile(walFilename, walData, 0)
-	require.NoError(t, err, "Failed to write WAL data")
-
-	// Delete the WAL file which should trigger a checkpoint
-	err = sm.DeleteFile(walFilename)
-	require.NoError(t, err, "Failed to delete WAL file")
-
-	// Verify the database file has been versioned
-	db := difffstest.SetupDB(t)
-	defer db.Close()
-
-	// Check that a version was created
-	var versionExists bool
-	err = db.QueryRow(`
-		SELECT EXISTS (
-			SELECT 1 
-			FROM snapshot_layers l 
-			JOIN versions v ON l.version_id = v.id 
-			JOIN files f ON l.file_id = f.id 
-			WHERE f.name = $1 AND v.tag IS NOT NULL
-		)`, dbFilename).Scan(&versionExists)
-	require.NoError(t, err, "Failed to check version existence")
-	assert.True(t, versionExists, "A version should have been created for the database file")
-
-	// Verify the WAL file is gone
-	_, err = sm.ReadFile(walFilename, 0, uint64(len(walData)))
-	assert.Error(t, err, "WAL file should no longer be accessible")
-}
-
 func TestReadFileStartingMidChunk(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_read_with_offset"
@@ -864,7 +747,7 @@ func TestReadFileStartingMidChunk(t *testing.T) {
 }
 
 func TestConcurrentWrites(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_concurrent_writes"
@@ -902,7 +785,7 @@ func TestConcurrentWrites(t *testing.T) {
 }
 
 func TestConcurrentReadWrite(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_concurrent_read_write"
@@ -944,7 +827,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 }
 
 func TestConcurrentCheckpoint(t *testing.T) {
-	sm, cleanup := difffstest.SetupStorageManager(t)
+	sm, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
 	filename := "testfile_concurrent_checkpoint"
@@ -977,7 +860,7 @@ func TestConcurrentCheckpoint(t *testing.T) {
 	wg.Wait()
 
 	// either v1 or v2 should be the current version
-	db := difffstest.SetupDB(t)
+	db := quackfstest.SetupDB(t)
 	defer db.Close()
 
 	layers, err := sm.LoadLayersByFileID(fileID)

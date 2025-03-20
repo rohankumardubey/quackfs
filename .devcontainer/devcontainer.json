@@ -62,8 +62,8 @@
         "POSTGRES_PORT": "5432",
         "POSTGRES_USER": "postgres",
         "POSTGRES_PASSWORD": "password",
-        "POSTGRES_DB": "difffs",
-        "POSTGRES_TEST_CONN": "postgres://postgres:password@localhost/difffs_test?sslmode=disable"
+        "POSTGRES_DB": "quackfs",
+        "POSTGRES_TEST_CONN": "postgres://postgres:password@localhost/quackfs_test?sslmode=disable"
     },
 
     // Set up PostgreSQL startup script
