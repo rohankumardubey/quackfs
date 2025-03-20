@@ -12,23 +12,45 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-type snapshotLayer struct {
+// layer represents a snapshot layer
+// When Active is true it means that the layer is currently in memory
+// and not yet persisted to storage. The active layer is the layer where
+// data written is stored.
+//
+// On DuckDB CHECKPOINT, the WAL file is removed which will trigger a
+// Manager.Checkpoint() call. The active layer, its data and its chunks
+// are persisted to storage. The active layer is then reset to a new empty
+// layer and the cycle continues.
+//
+// data is always written in a append-only fashion. The writes are their offsets
+// are stored in the chunks metadata. Which write will be represented by a
+// chunkMetadata.
+type layer struct {
 	id        int64
 	FileID    int64
-	Active    bool // whether of not it is the current active layer (memory only resident)
+	Active    bool // whether of not it is the current active layer (memory resident)
 	VersionID int64
 	Tag       string
-	chunks    []chunk
+	chunks    []metadata
 	size      uint64
+	data      []byte
+}
+
+// metadata holds information about where data was written in the layer data
+type metadata struct {
+	layerID    int64     // 0 if flushed is false
+	flushed    bool      // whether the metadata has been persisted to the database
+	layerRange [2]uint64 // Range within a layer as an array of two integers
+	fileRange  [2]uint64 // Range within the virtual file as an array of two integers
 }
 
 var ErrNotFound = errors.New("not found")
 
 type Manager struct {
-	db           *sql.DB
-	log          *log.Logger
-	mu           sync.RWMutex             // Add a mutex to protect activeLayers
-	activeLayers map[int64]*snapshotLayer // Map fileID -> active layer
+	db       *sql.DB
+	log      *log.Logger
+	mu       sync.RWMutex     // Add a mutex to protect activeLayers
+	memtable map[int64]*layer // Stores a mapping of file ids to their active layer
 }
 
 // NewManager creates (or reloads) a StorageManager using the provided metadataStore.
@@ -37,9 +59,9 @@ func NewManager(db *sql.DB, log *log.Logger) *Manager {
 	managerLog.SetPrefix("💽 storage")
 
 	sm := &Manager{
-		db:           db,
-		log:          managerLog,
-		activeLayers: make(map[int64]*snapshotLayer),
+		db:       db,
+		log:      managerLog,
+		memtable: make(map[int64]*layer),
 	}
 
 	return sm
@@ -59,13 +81,15 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 		return fmt.Errorf("failed to get file ID: %w", err)
 	}
 
-	activeLayer, exists := sm.activeLayers[fileID]
+	activeLayer, exists := sm.memtable[fileID]
 	if !exists {
-		activeLayer = &snapshotLayer{
+		activeLayer = &layer{
 			FileID: fileID,
-			chunks: []chunk{},
+			chunks: []metadata{},
+			data:   []byte{},
+			Active: true,
 		}
-		sm.activeLayers[fileID] = activeLayer
+		sm.memtable[fileID] = activeLayer
 	}
 
 	fileSize, err := sm.calcSizeOf(fileID)
@@ -89,10 +113,11 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 		layerRange := [2]uint64{layerSize, layerSize + bytesToAdd}
 		fileRange := [2]uint64{fileSize, fileSize + bytesToAdd}
 
-		activeLayer.chunks = append(activeLayer.chunks, chunk{
-			data:       zeroes,
+		activeLayer.data = append(activeLayer.data, zeroes...)
+		activeLayer.chunks = append(activeLayer.chunks, metadata{
 			layerRange: layerRange,
 			fileRange:  fileRange,
+			flushed:    false, // since we're writing to the active layer, it's not flushed yet
 		})
 		activeLayer.size = layerRange[1]
 	}
@@ -105,10 +130,11 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 	layerRange := [2]uint64{layerSize, layerSize + uint64(len(data))}
 	fileRange := [2]uint64{offset, offset + uint64(len(data))}
 
-	activeLayer.chunks = append(activeLayer.chunks, chunk{
-		data:       data,
+	activeLayer.data = append(activeLayer.data, data...)
+	activeLayer.chunks = append(activeLayer.chunks, metadata{
 		layerRange: layerRange,
 		fileRange:  fileRange,
+		flushed:    false, // since we're writing to the active layer, it's not flushed yet
 	})
 	activeLayer.size = layerRange[1]
 
@@ -119,7 +145,7 @@ func (sm *Manager) GetActiveLayerSize(fileID int64) uint64 {
 	sm.mu.RLock() // Read lock is sufficient for reading
 	defer sm.mu.RUnlock()
 
-	activeLayer, exists := sm.activeLayers[fileID]
+	activeLayer, exists := sm.memtable[fileID]
 	if !exists {
 		return 0
 	}
@@ -130,16 +156,12 @@ func (sm *Manager) GetActiveLayerData(fileID int64) []byte {
 	sm.mu.RLock() // Read lock is sufficient for reading
 	defer sm.mu.RUnlock()
 
-	activeLayer, exists := sm.activeLayers[fileID]
+	l, exists := sm.memtable[fileID]
 	if !exists {
 		return nil
 	}
 
-	var data []byte
-	for _, chunk := range activeLayer.chunks {
-		data = append(data, chunk.data...)
-	}
-	return data
+	return l.data
 }
 
 func (sm *Manager) SizeOf(filename string) (uint64, error) {
@@ -254,7 +276,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	// If version tag is specified, filter layers by version
 	if hasVersion {
 		query = `
-			SELECT c.snapshot_layer_id, c.data, c.layer_range, c.file_range
+			SELECT c.snapshot_layer_id, c.layer_range, c.file_range
 			FROM chunks c
 			INNER JOIN snapshot_layers l ON c.snapshot_layer_id = l.id
 			WHERE
@@ -265,7 +287,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		rows, err = tx.Query(query, versionedLayerId, fileID, offset, offset+size)
 	} else {
 		query = `
-			SELECT c.snapshot_layer_id, c.data, c.layer_range, c.file_range
+			SELECT c.snapshot_layer_id, c.layer_range, c.file_range
 			FROM chunks c
 			INNER JOIN snapshot_layers l ON c.snapshot_layer_id = l.id
 			WHERE
@@ -281,17 +303,16 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	defer rows.Close()
 
 	// Map to store chunks by layer ID
-	chunks := make([]chunk, 0)
+	chunks := make([]metadata, 0)
 
 	var maxEndOffset uint64
 
 	// Process chunks that could match the requested range
 	for rows.Next() {
 		var layerID int64
-		var data []byte
 		var layerRangeStr, fileRangeStr sql.NullString
 
-		if err := rows.Scan(&layerID, &data, &layerRangeStr, &fileRangeStr); err != nil {
+		if err := rows.Scan(&layerID, &layerRangeStr, &fileRangeStr); err != nil {
 			sm.log.Error("Error scanning chunk row", "error", err)
 			return nil, err
 		}
@@ -324,9 +345,9 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		}
 
 		// Append chunk to the results
-		chunks = append(chunks, chunk{
+		chunks = append(chunks, metadata{
 			layerID:    layerID,
-			data:       data,
+			flushed:    true, // since we're reading from the database, it's already flushed
 			layerRange: layerRange,
 			fileRange:  fileRange,
 		})
@@ -334,9 +355,10 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		if fileRange[1] > maxEndOffset {
 			maxEndOffset = fileRange[1]
 		}
+
 	}
 
-	activeLayer, exists := sm.activeLayers[fileID]
+	activeLayer, exists := sm.memtable[fileID]
 	// If there's an active layer for this file and no version tag is specified, include chunks that are in memory (not persisted in the database)
 	if exists && !hasVersion {
 		for _, chunk := range activeLayer.chunks {
@@ -359,6 +381,18 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		var bufferPos uint64
 		var chunkStartPos uint64
 		var dataSize uint64
+		var data []byte
+
+		// The layer for this chunk hasn't been flushed to storage yet. It's in the active layer.
+		if !chunk.flushed {
+			data = activeLayer.data[chunk.layerRange[0]:chunk.layerRange[1]]
+		} else {
+			data, err = getChunkData(sm.db, chunk)
+			if err != nil {
+				sm.log.Error("Failed to get chunk data", "error", err)
+				return nil, fmt.Errorf("failed to get chunk data: %w", err)
+			}
+		}
 
 		// Handle case where chunk starts before the requested offset
 		if chunk.fileRange[0] < offset {
@@ -368,24 +402,25 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 			bufferPos = 0 // Will start at the beginning of our buffer
 
 			// Calculate how much data we're actually copying
-			dataSize = uint64(len(chunk.data)) - chunkStartPos
+			dataSize = uint64(len(data)) - chunkStartPos
 		} else {
 			// Chunk starts at or after the requested offset
 			bufferPos = chunk.fileRange[0] - offset
 			chunkStartPos = 0
-			dataSize = uint64(len(chunk.data))
+			dataSize = uint64(len(data))
 		}
 
 		// Calculate the end position in the buffer
 		endPos := bufferPos + dataSize
 
 		if endPos <= uint64(len(buf)) {
-			copy(buf[bufferPos:endPos], chunk.data[chunkStartPos:chunkStartPos+dataSize])
+
+			copy(buf[bufferPos:endPos], data[chunkStartPos:chunkStartPos+dataSize])
 		} else {
 			// Handle case where chunk extends beyond current buffer
 			newBuf := make([]byte, endPos)
 			copy(newBuf, buf)
-			copy(newBuf[bufferPos:endPos], chunk.data[chunkStartPos:chunkStartPos+dataSize])
+			copy(newBuf[bufferPos:endPos], data[chunkStartPos:chunkStartPos+dataSize])
 			buf = newBuf
 		}
 	}
@@ -413,14 +448,6 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	}
 
 	return buf, nil
-}
-
-// chunk holds data for a write chunk.
-type chunk struct {
-	layerID    int64
-	data       []byte
-	layerRange [2]uint64 // Range within a layer as an array of two integers
-	fileRange  [2]uint64 // Range within the virtual file as an array of two integers
 }
 
 // InsertFile inserts a new file into the files table and returns its ID.
@@ -479,20 +506,17 @@ func (sm *Manager) GetFileIDByName(name string, opts ...queryOpt) (int64, error)
 	return fileID, nil
 }
 
-// insertChunk inserts a new chunk record.
-// Now includes layer_range and file_range parameters
-func (sm *Manager) insertChunk(layerID int64, data []byte, layerRange [2]uint64, fileRange [2]uint64, opts ...queryOpt) error {
+func (sm *Manager) insertChunk(layerID int64, c metadata, opts ...queryOpt) error {
 	sm.log.Debug("Inserting chunk in the database",
 		"layerID", layerID,
-		"dataSize", len(data),
-		"layerRange", layerRange,
-		"fileRange", fileRange)
+		"layerRange", c.layerRange,
+		"fileRange", c.fileRange)
 
-	layerRangeStr := fmt.Sprintf("[%d,%d)", layerRange[0], layerRange[1])
-	fileRangeStr := fmt.Sprintf("[%d,%d)", fileRange[0], fileRange[1])
+	layerRangeStr := fmt.Sprintf("[%d,%d)", c.layerRange[0], c.layerRange[1])
+	fileRangeStr := fmt.Sprintf("[%d,%d)", c.fileRange[0], c.fileRange[1])
 
-	query := `INSERT INTO chunks (snapshot_layer_id, data, layer_range, file_range) 
-	         VALUES ($1, $2, $3, $4);`
+	query := `INSERT INTO chunks (snapshot_layer_id, layer_range, file_range) 
+	         VALUES ($1, $2, $3);`
 
 	options := queryOpts{}
 	for _, opt := range opts {
@@ -501,17 +525,17 @@ func (sm *Manager) insertChunk(layerID int64, data []byte, layerRange [2]uint64,
 
 	var err error
 	if options.tx != nil {
-		_, err = options.tx.Exec(query, layerID, data, layerRangeStr, fileRangeStr)
+		_, err = options.tx.Exec(query, layerID, layerRangeStr, fileRangeStr)
 	} else {
-		_, err = sm.db.Exec(query, layerID, data, layerRangeStr, fileRangeStr)
+		_, err = sm.db.Exec(query, layerID, layerRangeStr, fileRangeStr)
 	}
 
 	if err != nil {
 		sm.log.Error("Failed to insert chunk", "layerID", layerID, "error", err)
-		return err
+		return fmt.Errorf("failed to insert chunk: %w", err)
 	}
 
-	sm.log.Debug("Chunk inserted successfully", "layerID", layerID, "dataSize", len(data))
+	sm.log.Debug("Chunk inserted successfully", "layerID", layerID)
 	return nil
 }
 
@@ -540,7 +564,7 @@ func (sm *Manager) Close() error {
 //
 // File size is determined by the highest end offset across all chunks
 func (sm *Manager) calcSizeOf(fileID int64, opts ...queryOpt) (uint64, error) {
-	activeLayer, exists := sm.activeLayers[fileID]
+	activeLayer, exists := sm.memtable[fileID]
 	if exists && activeLayer != nil && len(activeLayer.chunks) > 0 {
 		maxEndOffset := uint64(0)
 		for _, chunk := range activeLayer.chunks {
@@ -595,7 +619,7 @@ func (sm *Manager) calcSizeOf(fileID int64, opts ...queryOpt) (uint64, error) {
 }
 
 // LoadLayersByFileID loads all layers associated with a specific file ID from the database.
-func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*snapshotLayer, error) {
+func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*layer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
 	query := `
@@ -625,7 +649,7 @@ func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*snapsh
 	}
 	defer rows.Close()
 
-	var layers []*snapshotLayer
+	var layers []*layer
 	layerCount := 0
 
 	for rows.Next() {
@@ -637,7 +661,7 @@ func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*snapsh
 			return nil, err
 		}
 
-		layer := &snapshotLayer{FileID: fileID}
+		layer := &layer{FileID: fileID}
 		layer.id = id
 		if versionID.Valid {
 			layer.VersionID = versionID.Int64
@@ -672,8 +696,9 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 		return fmt.Errorf("failed to get file ID: %w", err)
 	}
 
-	activeLayer, exists := sm.activeLayers[fileID]
-	if !exists {
+	activeLayer, exists := sm.memtable[fileID]
+	if !exists || len(activeLayer.data) == 0 {
+		sm.log.Warn("No active layer or data to checkpoint", "filename", filename)
 		return nil // No active layer means no changes to checkpoint
 	}
 
@@ -705,35 +730,35 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 	err = tx.QueryRow(insertVersionQ, version).Scan(&versionID)
 	if err != nil {
 		sm.log.Error("Failed to insert new version", "tag", version, "error", err)
-		return err
+		return fmt.Errorf("failed to insert new version: %w", err)
 	}
 
 	// Store the current active layer data with the version
-	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id) VALUES ($1, $2) RETURNING id;`
+	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id, data) VALUES ($1, $2, $3) RETURNING id;`
 	var layerID int64
-	err = tx.QueryRow(insertLayerQ, fileID, versionID).Scan(&layerID)
+	err = tx.QueryRow(insertLayerQ, fileID, versionID, activeLayer.data).Scan(&layerID)
 	if err != nil {
 		sm.log.Error("Failed to commit layer with version", "error", err)
-		return err
+		return fmt.Errorf("failed to commit layer with version: %w", err)
 	}
 
-	// Commit the layer's chunks
-	for _, chunk := range activeLayer.chunks {
-		err = sm.insertChunk(layerID, chunk.data, chunk.layerRange, chunk.fileRange, withTx(tx))
+	// Insert the layer's chunks
+	for _, c := range activeLayer.chunks {
+		err = sm.insertChunk(layerID, c, withTx(tx))
 		if err != nil {
 			sm.log.Error("Failed to commit layer's chunks", "error", err)
-			return err
+			return fmt.Errorf("failed to commit layer's chunks: %w", err)
 		}
 	}
 
 	err = tx.Commit()
 	if err != nil {
 		sm.log.Error("Failed to commit transaction", "error", err)
-		return err
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	// Reset the active layer
-	delete(sm.activeLayers, fileID)
+	delete(sm.memtable, fileID)
 
 	sm.log.Debug("Checkpoint successful", "layerID", layerID)
 
@@ -797,4 +822,26 @@ func parseRange(rg string) (uint64, uint64, error) {
 // rangesOverlap checks if two ranges [start1, end1) and [start2, end2) overlap
 func rangesOverlap(range1 [2]uint64, range2 [2]uint64) bool {
 	return range1[0] < range2[1] && range2[0] < range1[1]
+}
+
+func getChunkData(db *sql.DB, c metadata) ([]byte, error) {
+	var data []byte
+	// Calculate the substring size (end - start)
+	var start int64 = int64(c.layerRange[0]) + 1 // the string is 1-indexed
+	var size int64 = int64(c.layerRange[1]) - int64(c.layerRange[0])
+
+	// Data is now stored directly in snapshot_layers rather than chunks
+	err := db.QueryRow(`
+		SELECT substring(data from $2 for $3)
+		FROM snapshot_layers
+		WHERE id = $1
+	`, c.layerID, start, size).Scan(&data)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return []byte{}, nil
+		}
+		return nil, fmt.Errorf("error retrieving chunk data: %w", err)
+	}
+
+	return data, nil
 }

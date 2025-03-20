@@ -1,3 +1,13 @@
 {
-    "makefile.configureOnOpen": false
+    "makefile.configureOnOpen": false,
+    "go.testFlags": [
+        "-failfast",
+        "-timeout",
+        "5s",
+        "-p",
+        "1",
+        "-race",
+        "-shuffle",
+        "on"
+    ]
 }

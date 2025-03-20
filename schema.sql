@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS snapshot_layers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     active INTEGER DEFAULT 0,
     version_id INTEGER DEFAULT NULL REFERENCES versions(id),
+    data BYTEA NOT NULL,
     CHECK ((active = 1 AND version_id IS NULL) OR (active = 0 AND version_id IS NOT NULL)), -- version_id is NULL for the active snapshot layer
     UNIQUE (file_id, version_id)
 );
@@ -28,7 +29,6 @@ CREATE TABLE IF NOT EXISTS snapshot_layers (
 CREATE TABLE IF NOT EXISTS chunks (
     id SERIAL PRIMARY KEY,
     snapshot_layer_id INTEGER REFERENCES snapshot_layers(id),
-    data BYTEA NOT NULL,
     layer_range INT8RANGE NOT NULL,
     file_range INT8RANGE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

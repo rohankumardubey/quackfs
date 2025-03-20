@@ -28,6 +28,7 @@ This project is currently in development. Some of planned features are:
 - [ ] Creating new databases from a specific point in time (sharing data with zero copy)
 - [ ] Merging of snapshot layers
 - [ ] Garbage collection of snapshot layers
+- [ ] Fix -test.shuffle 1742466944778699921
 
 ## Getting Started
 

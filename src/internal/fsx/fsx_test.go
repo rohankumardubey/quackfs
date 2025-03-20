@@ -62,65 +62,6 @@ func TestFuseReadWrite(t *testing.T) {
 	}
 }
 
-// WaitForMount attempts to create a file in the mount directory to verify mount is ready
-func waitForMount(mountDir string, t *testing.T) {
-	const attempts = 10
-	for range attempts {
-		testFile := filepath.Join(mountDir, "test_mount_ready.duckdb")
-		f, err := os.Create(testFile)
-		if err == nil {
-			f.Close()
-			os.Remove(testFile)
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("Mount point %s does not appear to be ready after %d attempts", mountDir, attempts)
-}
-
-// SetupFuseMount creates a temporary mount directory and mounts a FUSE filesystem
-// It returns the mountpoint, a cleanup function, and an error status channel
-func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error) {
-	// Create a temporary mount directory
-	mountDir, err := os.MkdirTemp("", "fusemnt")
-	if err != nil {
-		t.Fatalf("TempDir error: %v", err)
-	}
-
-	sm, smCleanup := quackfstest.SetupStorageManager(t)
-
-	// Create a test log
-	log := logger.New(os.Stderr)
-
-	// Setup error channel to monitor mount process
-	errChan := make(chan error, 1)
-
-	// Mount the FUSE filesystem
-	conn, err := fuse.Mount(mountDir, fuse.FSName("myfusefs"), fuse.Subtype("myfusefs"))
-	if err != nil {
-		os.RemoveAll(mountDir)
-		t.Fatalf("Failed to mount FUSE: %v", err)
-	}
-
-	// Serve the filesystem in a goroutine
-	go func() {
-		errChan <- fs.Serve(conn, NewFS(sm, log, "/tmp"))
-	}()
-
-	// Create cleanup function
-	cleanup := func() {
-		fuse.Unmount(mountDir)
-		conn.Close()
-		os.RemoveAll(mountDir)
-		smCleanup()
-	}
-
-	// Test the mount point by trying to access it
-	waitForMount(mountDir, t)
-
-	return mountDir, sm, cleanup, errChan
-}
-
 // TestWriteBeyondFileSize tests writing to an offset beyond the current file size
 func TestWriteBeyondFileSize(t *testing.T) {
 	// Set up test environment
@@ -211,18 +152,6 @@ func TestFileEmptyWriteNonZeroOffset(t *testing.T) {
 	require.Equal(t, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00hello", string(data))
 }
 
-// setupTestEnvironment creates a storage manager and logger for testing
-func setupTestEnvironment(t *testing.T) (*storage.Manager, *log.Logger, func()) {
-	sm, smCleanup := quackfstest.SetupStorageManager(t)
-	log := logger.New(os.Stderr)
-
-	cleanup := func() {
-		smCleanup()
-	}
-
-	return sm, log, cleanup
-}
-
 // TestStorageCheckpointOnDuckDBCheckpoint tests removal of .duckdb.wal files with checkpointing
 func TestStorageCheckpointOnDuckDBCheckpoint(t *testing.T) {
 	// Create and mount the FUSE filesystem
@@ -276,4 +205,75 @@ func TestStorageCheckpointOnDuckDBCheckpoint(t *testing.T) {
 	default:
 		// No error, which is good
 	}
+}
+
+// WaitForMount attempts to create a file in the mount directory to verify mount is ready
+func waitForMount(mountDir string, t *testing.T) {
+	const attempts = 10
+	for range attempts {
+		testFile := filepath.Join(mountDir, "test_mount_ready.duckdb")
+		f, err := os.Create(testFile)
+		if err == nil {
+			f.Close()
+			os.Remove(testFile)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("Mount point %s does not appear to be ready after %d attempts", mountDir, attempts)
+}
+
+// SetupFuseMount creates a temporary mount directory and mounts a FUSE filesystem
+// It returns the mountpoint, a cleanup function, and an error status channel
+func setupFuseMount(t *testing.T) (string, *storage.Manager, func(), chan error) {
+	// Create a temporary mount directory
+	mountDir, err := os.MkdirTemp("", "fusemnt")
+	if err != nil {
+		t.Fatalf("TempDir error: %v", err)
+	}
+
+	sm, smCleanup := quackfstest.SetupStorageManager(t)
+
+	// Create a test log
+	log := logger.New(os.Stderr)
+
+	// Setup error channel to monitor mount process
+	errChan := make(chan error, 1)
+
+	// Mount the FUSE filesystem
+	conn, err := fuse.Mount(mountDir, fuse.FSName("myfusefs"), fuse.Subtype("myfusefs"))
+	if err != nil {
+		os.RemoveAll(mountDir)
+		t.Fatalf("Failed to mount FUSE: %v", err)
+	}
+
+	// Serve the filesystem in a goroutine
+	go func() {
+		errChan <- fs.Serve(conn, NewFS(sm, log, "/tmp"))
+	}()
+
+	// Create cleanup function
+	cleanup := func() {
+		fuse.Unmount(mountDir)
+		conn.Close()
+		os.RemoveAll(mountDir)
+		smCleanup()
+	}
+
+	// Test the mount point by trying to access it
+	waitForMount(mountDir, t)
+
+	return mountDir, sm, cleanup, errChan
+}
+
+// setupTestEnvironment creates a storage manager and logger for testing
+func setupTestEnvironment(t *testing.T) (*storage.Manager, *log.Logger, func()) {
+	sm, smCleanup := quackfstest.SetupStorageManager(t)
+	log := logger.New(os.Stderr)
+
+	cleanup := func() {
+		smCleanup()
+	}
+
+	return sm, log, cleanup
 }

@@ -6,7 +6,7 @@ build:
 	GOEXPERIMENT=synctest go build -o quackfs.exe ./src/cmd/quackfs
 
 test: db.test.drop db.test.init
-	GOEXPERIMENT=synctest go test -timeout 5s -p 1 -race -shuffle=on -v ./src/... $(TEST)
+	GOEXPERIMENT=synctest go test -failfast -timeout 5s -p 1 -race -shuffle=on -v ./src/... $(TEST)
 
 clean: db.drop
 	fusermount3 -u /tmp/fuse || true
@@ -20,11 +20,12 @@ db.init:
 	@if ! psql -U postgres -lqt | cut -d \| -f 1 | grep -qw quackfs; then \
 		echo "Creating quackfs database..."; \
 		psql -U postgres -c "CREATE DATABASE quackfs;"; \
-		psql -U postgres -d quackfs -f schema.sql; \
 		psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE quackfs TO postgres;"; \
 	else \
 		echo "Database quackfs already exists"; \
 	fi
+
+	@psql -U postgres -d quackfs -f schema.sql;
 
 db.test.init:
 	@echo "Setting up PostgreSQL test database if not already running"
@@ -33,11 +34,12 @@ db.test.init:
 	@if ! psql -U postgres -lqt | cut -d \| -f 1 | grep -qw quackfs_test; then \
 		echo "Creating quackfs_test database..."; \
 		psql -U postgres -c "CREATE DATABASE quackfs_test;"; \
-		psql -U postgres -d quackfs_test -f schema.sql; \
 		psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE quackfs_test TO postgres;"; \
 	else \
 		echo "Database quackfs_test already exists"; \
 	fi
+
+	@psql -U postgres -d quackfs_test -f schema.sql;
 
 db.drop:
 	@echo "Cleaning PostgreSQL database"

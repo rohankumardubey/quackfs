@@ -30,7 +30,7 @@ type WALManager struct {
 // NewWALManager creates a new WAL manager instance.
 func NewWALManager(walPath string, sm DBCheckpointer, logger *log.Logger) *WALManager {
 	walLog := logger.With()
-	walLog.SetPrefix("📝 WALManager")
+	walLog.SetPrefix("📝 WAL")
 
 	return &WALManager{
 		walPath: walPath,
