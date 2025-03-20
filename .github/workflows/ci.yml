@@ -11,18 +11,22 @@ jobs:
     runs-on: ubuntu-latest
     
     services:
+      # Label used to access the service container
       postgres:
-        image: postgres:latest
+        # Docker Hub image
+        image: postgres
+        # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-        ports:
-          - 5432:5432
+        # Set health checks to wait until postgres has started
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
 
     steps:
     - uses: actions/checkout@v3
@@ -39,6 +43,10 @@ jobs:
         sudo apt-get install -y fuse3
 
     - name: Run tests
-      run: make test
+      run: |
+        psql -U postgres -c "SELECT 1"
+        make test
       env:
+        POSTGRES_HOST: localhost
+        POSTGRES_PORT: 5432
         POSTGRES_TEST_CONN: postgres://postgres:postgres@localhost:5432/quackfs_test?sslmode=disable
