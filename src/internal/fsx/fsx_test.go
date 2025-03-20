@@ -68,15 +68,17 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	sm, log, cleanup := setupTestEnvironment(t)
 	defer cleanup()
 
+	ctx := context.Background()
+
 	// Create a test file
 	filename := "test_write_beyond.duckdb"
 	initialContent := []byte("initial")
-	fileID, err := sm.InsertFile(filename)
+	fileID, err := sm.InsertFile(ctx, filename)
 	require.NoError(t, err)
 	require.NotZero(t, fileID)
 
 	// Write initial content at offset 0
-	err = sm.WriteFile(filename, initialContent, 0)
+	err = sm.WriteFile(ctx, filename, initialContent, 0)
 	require.NoError(t, err)
 
 	// Create a FUSE file instance
@@ -106,11 +108,11 @@ func TestWriteBeyondFileSize(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(beyondData), resp.Size)
 
-	fileSize, err := sm.SizeOf(filename)
+	fileSize, err := sm.SizeOf(ctx, filename)
 	require.NoError(t, err)
 
 	// Read the entire file to verify the content
-	data, err := sm.ReadFile(filename, 0, fileSize)
+	data, err := sm.ReadFile(ctx, filename, 0, fileSize)
 	require.NoError(t, err)
 
 	// Verify the file size
@@ -134,18 +136,20 @@ func TestFileEmptyWriteNonZeroOffset(t *testing.T) {
 	sm, _, cleanup := setupTestEnvironment(t)
 	defer cleanup()
 
+	ctx := context.Background()
+
 	// Create a test file
 	filename := "test_empty_write.duckdb"
-	fileID, err := sm.InsertFile(filename)
+	fileID, err := sm.InsertFile(ctx, filename)
 	require.NoError(t, err)
 	require.NotZero(t, fileID)
 
 	// Write empty data at offset 10
-	err = sm.WriteFile(filename, []byte("hello"), 10)
+	err = sm.WriteFile(ctx, filename, []byte("hello"), 10)
 	require.NoError(t, err)
 
 	// Read the file to verify the content
-	data, err := sm.ReadFile(filename, 0, 15)
+	data, err := sm.ReadFile(ctx, filename, 0, 15)
 	require.NoError(t, err)
 
 	require.Equal(t, "hello", string(data[10:]))

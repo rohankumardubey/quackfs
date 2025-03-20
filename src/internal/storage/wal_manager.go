@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 // DBCheckpointer is an interface that defines the methods needed by WALManager
 // to checkpoint a database file
 type DBCheckpointer interface {
-	Checkpoint(filename string, version string) error
+	Checkpoint(ctx context.Context, filename string, version string) error
 }
 
 // WALManager handles operations for DuckDB WAL (Write-Ahead Log) files.
@@ -236,7 +237,7 @@ func (wm *WALManager) Write(filename string, data []byte, offset uint64) (int, e
 }
 
 // Remove removes a WAL file and checkpoints the associated database
-func (wm *WALManager) Remove(filename string) error {
+func (wm *WALManager) Remove(ctx context.Context, filename string) error {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -256,7 +257,7 @@ func (wm *WALManager) Remove(filename string) error {
 		"dbFile", dbFilename,
 		"checkpointID", checkpointID)
 
-	if err := wm.sm.Checkpoint(dbFilename, checkpointID); err != nil {
+	if err := wm.sm.Checkpoint(ctx, dbFilename, checkpointID); err != nil {
 		return fmt.Errorf("failed to checkpoint database: %w", err)
 	}
 

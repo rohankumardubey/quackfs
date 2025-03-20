@@ -68,14 +68,14 @@ func NewManager(db *sql.DB, log *log.Logger) *Manager {
 }
 
 // WriteFile writes data to the active layer at the specified offset.
-func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error {
+func (sm *Manager) WriteFile(ctx context.Context, filename string, data []byte, offset uint64) error {
 	sm.mu.Lock()         // Lock before accessing activeLayers
 	defer sm.mu.Unlock() // Ensure unlock when function returns
 
 	sm.log.Debug("Writing data", "filename", filename, "size", len(data), "offset", offset)
 
 	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(filename)
+	fileID, err := sm.GetFileIDByName(ctx, filename)
 	if err != nil {
 		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return fmt.Errorf("failed to get file ID: %w", err)
@@ -92,7 +92,7 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 		sm.memtable[fileID] = activeLayer
 	}
 
-	fileSize, err := sm.calcSizeOf(fileID)
+	fileSize, err := sm.calcSizeOf(ctx, fileID)
 	if err != nil {
 		sm.log.Error("Failed to calculate size of file", "error", err)
 		return fmt.Errorf("failed to calculate size of file: %w", err)
@@ -141,7 +141,7 @@ func (sm *Manager) WriteFile(filename string, data []byte, offset uint64) error 
 	return nil
 }
 
-func (sm *Manager) GetActiveLayerSize(fileID int64) uint64 {
+func (sm *Manager) GetActiveLayerSize(ctx context.Context, fileID int64) uint64 {
 	sm.mu.RLock() // Read lock is sufficient for reading
 	defer sm.mu.RUnlock()
 
@@ -152,7 +152,7 @@ func (sm *Manager) GetActiveLayerSize(fileID int64) uint64 {
 	return activeLayer.size
 }
 
-func (sm *Manager) GetActiveLayerData(fileID int64) []byte {
+func (sm *Manager) GetActiveLayerData(ctx context.Context, fileID int64) []byte {
 	sm.mu.RLock() // Read lock is sufficient for reading
 	defer sm.mu.RUnlock()
 
@@ -164,13 +164,13 @@ func (sm *Manager) GetActiveLayerData(fileID int64) []byte {
 	return l.data
 }
 
-func (sm *Manager) SizeOf(filename string) (uint64, error) {
-	fileID, err := sm.GetFileIDByName(filename)
+func (sm *Manager) SizeOf(ctx context.Context, filename string) (uint64, error) {
+	fileID, err := sm.GetFileIDByName(ctx, filename)
 	if err != nil {
 		return 0, err
 	}
 
-	return sm.calcSizeOf(fileID)
+	return sm.calcSizeOf(ctx, fileID)
 }
 
 // readFileOpt defines functional options for GetDataRange
@@ -190,7 +190,7 @@ func WithVersion(v string) readFileOpt {
 
 // ReadFile returns a slice of data from the given offset up to size bytes.
 // Optional version tag can be specified to retrieve data up to a specific version.
-func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ...readFileOpt) ([]byte, error) {
+func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64, size uint64, opts ...readFileOpt) ([]byte, error) {
 	sm.mu.RLock() // Read lock is sufficient for reading
 	defer sm.mu.RUnlock()
 
@@ -217,7 +217,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	}
 
 	// Begin transaction in order to have consistent reads
-	tx, err := sm.db.BeginTx(context.Background(), &sql.TxOptions{
+	tx, err := sm.db.BeginTx(ctx, &sql.TxOptions{
 		ReadOnly: true,
 	})
 	if err != nil {
@@ -241,7 +241,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 	}()
 
 	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(filename, withTx(tx))
+	fileID, err := sm.GetFileIDByName(ctx, filename, withTx(tx))
 	if fileID == 0 {
 		sm.log.Error("File not found", "filename", filename)
 		return nil, fmt.Errorf("file not found")
@@ -253,7 +253,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 
 	// check if there's a layer for this file with the given version tag
 	if hasVersion {
-		err = tx.QueryRow(`
+		err = tx.QueryRowContext(ctx, `
 			SELECT snapshot_layers.id
 			FROM snapshot_layers
 			INNER JOIN versions on versions.id = snapshot_layers.version_id
@@ -284,7 +284,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 				c.file_range && int8range($3, $4)
 			ORDER BY l.id ASC, c.id ASC;
 		`
-		rows, err = tx.Query(query, versionedLayerId, fileID, offset, offset+size)
+		rows, err = tx.QueryContext(ctx, query, versionedLayerId, fileID, offset, offset+size)
 	} else {
 		query = `
 			SELECT c.snapshot_layer_id, c.layer_range, c.file_range
@@ -294,7 +294,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 				l.file_id = $1 AND c.file_range && int8range($2, $3)
 			ORDER BY l.id ASC, c.id ASC;
 		`
-		rows, err = tx.Query(query, fileID, offset, offset+size)
+		rows, err = tx.QueryContext(ctx, query, fileID, offset, offset+size)
 	}
 	if err != nil {
 		sm.log.Error("Failed to query chunks", "error", err)
@@ -387,7 +387,7 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 		if !chunk.flushed {
 			data = activeLayer.data[chunk.layerRange[0]:chunk.layerRange[1]]
 		} else {
-			data, err = getChunkData(sm.db, chunk)
+			data, err = getChunkData(ctx, sm.db, chunk)
 			if err != nil {
 				sm.log.Error("Failed to get chunk data", "error", err)
 				return nil, fmt.Errorf("failed to get chunk data: %w", err)
@@ -451,12 +451,12 @@ func (sm *Manager) ReadFile(filename string, offset uint64, size uint64, opts ..
 }
 
 // InsertFile inserts a new file into the files table and returns its ID.
-func (sm *Manager) InsertFile(name string) (int64, error) {
+func (sm *Manager) InsertFile(ctx context.Context, name string) (int64, error) {
 	sm.log.Debug("Inserting new file into metadata store", "name", name)
 
 	query := `INSERT INTO files (name) VALUES ($1) RETURNING id;`
 	var fileID int64
-	err := sm.db.QueryRow(query, name).Scan(&fileID)
+	err := sm.db.QueryRowContext(ctx, query, name).Scan(&fileID)
 	if err != nil {
 		sm.log.Error("Failed to insert new file", "name", name, "error", err)
 		return 0, err
@@ -478,7 +478,7 @@ func withTx(tx *sql.Tx) queryOpt {
 	}
 }
 
-func (sm *Manager) GetFileIDByName(name string, opts ...queryOpt) (int64, error) {
+func (sm *Manager) GetFileIDByName(ctx context.Context, name string, opts ...queryOpt) (int64, error) {
 	query := `SELECT id FROM files WHERE name = $1;`
 	var fileID int64
 
@@ -490,9 +490,9 @@ func (sm *Manager) GetFileIDByName(name string, opts ...queryOpt) (int64, error)
 	var err error
 
 	if options.tx != nil {
-		err = options.tx.QueryRow(query, name).Scan(&fileID)
+		err = options.tx.QueryRowContext(ctx, query, name).Scan(&fileID)
 	} else {
-		err = sm.db.QueryRow(query, name).Scan(&fileID)
+		err = sm.db.QueryRowContext(ctx, query, name).Scan(&fileID)
 	}
 
 	if err != nil {
@@ -506,7 +506,7 @@ func (sm *Manager) GetFileIDByName(name string, opts ...queryOpt) (int64, error)
 	return fileID, nil
 }
 
-func (sm *Manager) insertChunk(layerID int64, c metadata, opts ...queryOpt) error {
+func (sm *Manager) insertChunk(ctx context.Context, layerID int64, c metadata, opts ...queryOpt) error {
 	sm.log.Debug("Inserting chunk in the database",
 		"layerID", layerID,
 		"layerRange", c.layerRange,
@@ -525,9 +525,9 @@ func (sm *Manager) insertChunk(layerID int64, c metadata, opts ...queryOpt) erro
 
 	var err error
 	if options.tx != nil {
-		_, err = options.tx.Exec(query, layerID, layerRangeStr, fileRangeStr)
+		_, err = options.tx.ExecContext(ctx, query, layerID, layerRangeStr, fileRangeStr)
 	} else {
-		_, err = sm.db.Exec(query, layerID, layerRangeStr, fileRangeStr)
+		_, err = sm.db.ExecContext(ctx, query, layerID, layerRangeStr, fileRangeStr)
 	}
 
 	if err != nil {
@@ -563,7 +563,7 @@ func (sm *Manager) Close() error {
 //	              							         File size = 44
 //
 // File size is determined by the highest end offset across all chunks
-func (sm *Manager) calcSizeOf(fileID int64, opts ...queryOpt) (uint64, error) {
+func (sm *Manager) calcSizeOf(ctx context.Context, fileID int64, opts ...queryOpt) (uint64, error) {
 	activeLayer, exists := sm.memtable[fileID]
 	if exists && activeLayer != nil && len(activeLayer.chunks) > 0 {
 		maxEndOffset := uint64(0)
@@ -601,9 +601,9 @@ func (sm *Manager) calcSizeOf(fileID int64, opts ...queryOpt) (uint64, error) {
 
 	var err error
 	if options.tx != nil {
-		err = options.tx.QueryRow(query, fileID).Scan(&highestOffCommited)
+		err = options.tx.QueryRowContext(ctx, query, fileID).Scan(&highestOffCommited)
 	} else {
-		err = sm.db.QueryRow(query, fileID).Scan(&highestOffCommited)
+		err = sm.db.QueryRowContext(ctx, query, fileID).Scan(&highestOffCommited)
 	}
 
 	if err != nil {
@@ -619,7 +619,7 @@ func (sm *Manager) calcSizeOf(fileID int64, opts ...queryOpt) (uint64, error) {
 }
 
 // LoadLayersByFileID loads all layers associated with a specific file ID from the database.
-func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*layer, error) {
+func (sm *Manager) LoadLayersByFileID(ctx context.Context, fileID int64, opts ...queryOpt) ([]*layer, error) {
 	sm.log.Debug("Loading layers for file from metadata store", "fileID", fileID)
 
 	query := `
@@ -638,9 +638,9 @@ func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*layer,
 	var err error
 
 	if options.tx != nil {
-		rows, err = options.tx.Query(query, fileID)
+		rows, err = options.tx.QueryContext(ctx, query, fileID)
 	} else {
-		rows, err = sm.db.Query(query, fileID)
+		rows, err = sm.db.QueryContext(ctx, query, fileID)
 	}
 
 	if err != nil {
@@ -681,29 +681,12 @@ func (sm *Manager) LoadLayersByFileID(fileID int64, opts ...queryOpt) ([]*layer,
 	return layers, nil
 }
 
-func (sm *Manager) Checkpoint(filename string, version string) error {
+func (sm *Manager) Checkpoint(ctx context.Context, filename string, version string) error {
 	sm.mu.Lock()         // Lock before accessing activeLayers
 	defer sm.mu.Unlock() // Ensure unlock when function returns
 
-	// Get the file ID from the file name
-	fileID, err := sm.GetFileIDByName(filename)
-	if err != nil {
-		if err == ErrNotFound {
-			sm.log.Warn("File not found, nothing to checkpoint", "filename", filename)
-			return nil
-		}
-		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
-		return fmt.Errorf("failed to get file ID: %w", err)
-	}
-
-	activeLayer, exists := sm.memtable[fileID]
-	if !exists || len(activeLayer.data) == 0 {
-		sm.log.Warn("No active layer or data to checkpoint", "filename", filename)
-		return nil // No active layer means no changes to checkpoint
-	}
-
 	// Start transaction
-	tx, err := sm.db.Begin()
+	tx, err := sm.db.BeginTx(ctx, nil)
 	if err != nil {
 		sm.log.Error("Failed to begin transaction", "error", err)
 		return err
@@ -724,10 +707,27 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 		}
 	}()
 
+	// Get the file ID from the file name
+	fileID, err := sm.GetFileIDByName(ctx, filename, withTx(tx))
+	if err != nil {
+		if err == ErrNotFound {
+			sm.log.Warn("File not found, nothing to checkpoint", "filename", filename)
+			return nil
+		}
+		sm.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	activeLayer, exists := sm.memtable[fileID]
+	if !exists || len(activeLayer.data) == 0 {
+		sm.log.Warn("No active layer or data to checkpoint", "filename", filename)
+		return nil // No active layer means no changes to checkpoint
+	}
+
 	// Insert version within transaction
 	insertVersionQ := `INSERT INTO versions (tag) VALUES ($1) RETURNING id;`
 	var versionID int64
-	err = tx.QueryRow(insertVersionQ, version).Scan(&versionID)
+	err = tx.QueryRowContext(ctx, insertVersionQ, version).Scan(&versionID)
 	if err != nil {
 		sm.log.Error("Failed to insert new version", "tag", version, "error", err)
 		return fmt.Errorf("failed to insert new version: %w", err)
@@ -736,7 +736,7 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 	// Store the current active layer data with the version
 	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id, data) VALUES ($1, $2, $3) RETURNING id;`
 	var layerID int64
-	err = tx.QueryRow(insertLayerQ, fileID, versionID, activeLayer.data).Scan(&layerID)
+	err = tx.QueryRowContext(ctx, insertLayerQ, fileID, versionID, activeLayer.data).Scan(&layerID)
 	if err != nil {
 		sm.log.Error("Failed to commit layer with version", "error", err)
 		return fmt.Errorf("failed to commit layer with version: %w", err)
@@ -744,7 +744,7 @@ func (sm *Manager) Checkpoint(filename string, version string) error {
 
 	// Insert the layer's chunks
 	for _, c := range activeLayer.chunks {
-		err = sm.insertChunk(layerID, c, withTx(tx))
+		err = sm.insertChunk(ctx, layerID, c, withTx(tx))
 		if err != nil {
 			sm.log.Error("Failed to commit layer's chunks", "error", err)
 			return fmt.Errorf("failed to commit layer's chunks: %w", err)
@@ -772,9 +772,9 @@ type fileInfo struct {
 }
 
 // GetAllFiles returns a list of all files in the database
-func (sm *Manager) GetAllFiles() ([]fileInfo, error) {
+func (sm *Manager) GetAllFiles(ctx context.Context) ([]fileInfo, error) {
 	query := `SELECT id, name FROM files;`
-	rows, err := sm.db.Query(query)
+	rows, err := sm.db.QueryContext(ctx, query)
 	if err != nil {
 		sm.log.Error("Failed to query files", "error", err)
 		return nil, err
@@ -824,14 +824,14 @@ func rangesOverlap(range1 [2]uint64, range2 [2]uint64) bool {
 	return range1[0] < range2[1] && range2[0] < range1[1]
 }
 
-func getChunkData(db *sql.DB, c metadata) ([]byte, error) {
+func getChunkData(ctx context.Context, db *sql.DB, c metadata) ([]byte, error) {
 	var data []byte
 	// Calculate the substring size (end - start)
 	var start int64 = int64(c.layerRange[0]) + 1 // the string is 1-indexed
 	var size int64 = int64(c.layerRange[1]) - int64(c.layerRange[0])
 
 	// Data is now stored directly in snapshot_layers rather than chunks
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT substring(data from $2 for $3)
 		FROM snapshot_layers
 		WHERE id = $1

@@ -120,7 +120,7 @@ func (dir Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	}
 
 	// Get file size for regular files
-	size, err := dir.sm.SizeOf(name)
+	size, err := dir.sm.SizeOf(ctx, name)
 	if err != nil {
 		if err == storage.ErrNotFound {
 			return nil, syscall.ENOENT
@@ -149,7 +149,7 @@ func (dir Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	all := []fuse.Dirent{}
 
 	// Query the database for all files
-	files, err := dir.sm.GetAllFiles()
+	files, err := dir.sm.GetAllFiles(ctx)
 	if err != nil {
 		dir.log.Error("Failed to read directory from database", "error", err)
 		return nil, err
@@ -195,7 +195,7 @@ func (dir Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	}
 
 	// For .duckdb.wal files, use the WAL manager to remove them
-	err := dir.walManager.Remove(req.Name)
+	err := dir.walManager.Remove(ctx, req.Name)
 	if err != nil {
 		dir.log.Error("Failed to remove WAL file", "name", req.Name, "error", err)
 		return err
@@ -243,7 +243,7 @@ func (dir Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 	}
 
 	// Otherwise, it's a database file, so we need to insert it into the storage manager
-	_, err := dir.sm.InsertFile(req.Name)
+	_, err := dir.sm.InsertFile(ctx, req.Name)
 	if err != nil {
 		dir.log.Error("Failed to insert file into database", "name", req.Name, "error", err)
 		return nil, nil, err
@@ -336,7 +336,7 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	}
 
 	// For regular files, get size from the storage manager
-	size, err := f.sm.SizeOf(f.name)
+	size, err := f.sm.SizeOf(ctx, f.name)
 	if err != nil {
 		f.log.Error("Failed to get file size", "name", f.name, "error", err)
 		return err
@@ -380,7 +380,7 @@ func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 	}
 
 	// Read from the layer manager for all other files
-	data, err := f.sm.ReadFile(f.name, uint64(req.Offset), uint64(req.Size))
+	data, err := f.sm.ReadFile(ctx, f.name, uint64(req.Offset), uint64(req.Size))
 	if err != nil {
 		f.log.Error("Failed to read data", "name", f.name, "error", err)
 		return err
@@ -422,7 +422,7 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	}
 
 	// Use the layer manager to handle the write operation for all other files
-	err := f.sm.WriteFile(f.name, dataCopy, uint64(req.Offset))
+	err := f.sm.WriteFile(ctx, f.name, dataCopy, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
@@ -470,7 +470,7 @@ func (f *File) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	}
 
 	// For .duckdb.wal files, use the WAL manager to remove them
-	err := f.wm.Remove(f.name)
+	err := f.wm.Remove(ctx, f.name)
 	if err != nil {
 		f.log.Error("Failed to remove WAL file", "name", f.name, "error", err)
 		return err

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,12 +18,12 @@ var _ DBCheckpointer = (*Manager)(nil)
 
 // For testing purposes, we'll use a simple struct that just implements the methods we need
 type mockStorageManager struct {
-	checkpointFn func(filename, version string) error
+	checkpointFn func(ctx context.Context, filename, version string) error
 }
 
-func (m *mockStorageManager) Checkpoint(filename string, version string) error {
+func (m *mockStorageManager) Checkpoint(ctx context.Context, filename string, version string) error {
 	if m.checkpointFn != nil {
-		return m.checkpointFn(filename, version)
+		return m.checkpointFn(ctx, filename, version)
 	}
 	return nil
 }
@@ -192,7 +193,7 @@ func TestWALManagerRemove(t *testing.T) {
 	checkpointCalled := false
 	checkpointError := false
 	mockSM := &mockStorageManager{
-		checkpointFn: func(filename, version string) error {
+		checkpointFn: func(ctx context.Context, filename, version string) error {
 			if filename == "test.duckdb" {
 				checkpointCalled = true
 				return nil
@@ -216,7 +217,7 @@ func TestWALManagerRemove(t *testing.T) {
 
 	// Test Remove
 	t.Run("Remove WAL file", func(t *testing.T) {
-		err := wm.Remove(testFile)
+		err := wm.Remove(context.Background(), testFile)
 		require.NoError(t, err)
 
 		// Verify file was removed
@@ -229,7 +230,7 @@ func TestWALManagerRemove(t *testing.T) {
 
 	// Test removing invalid file
 	t.Run("Remove invalid file", func(t *testing.T) {
-		err := wm.Remove("invalid.txt")
+		err := wm.Remove(context.Background(), "invalid.txt")
 		assert.Error(t, err)
 	})
 
@@ -241,7 +242,7 @@ func TestWALManagerRemove(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to remove
-		err = wm.Remove(newFile)
+		err = wm.Remove(context.Background(), newFile)
 		assert.Error(t, err)
 		assert.True(t, checkpointError, "Checkpoint error handler should have been called")
 

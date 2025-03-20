@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -91,8 +92,10 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 		os.Exit(1)
 	}
 
+	ctx := context.Background()
+
 	// Check if the file exists
-	fileID, err := sm.GetFileIDByName(*fileName)
+	fileID, err := sm.GetFileIDByName(ctx, *fileName)
 	if err != nil {
 		log.Fatal("Failed to check if file exists", "error", err)
 	}
@@ -100,7 +103,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 	// If the file doesn't exist, create it
 	if fileID == 0 {
 		log.Info("File does not exist, creating it", "fileName", *fileName)
-		fileID, err = sm.InsertFile(*fileName)
+		fileID, err = sm.InsertFile(ctx, *fileName)
 		if err != nil {
 			log.Fatal("Failed to create file", "error", err)
 		}
@@ -109,7 +112,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 	// Get current file size
 	fileSize := uint64(0)
 	if fileID != 0 {
-		fileSize, err = sm.SizeOf(*fileName)
+		fileSize, err = sm.SizeOf(ctx, *fileName)
 		if err != nil {
 			log.Fatal("Failed to get file size", "error", err)
 		}
@@ -134,7 +137,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 			// Fill the gap with null bytes if needed
 			if gapSize > 0 {
 				nullBytes := make([]byte, gapSize)
-				err := sm.WriteFile(*fileName, nullBytes, fileSize)
+				err := sm.WriteFile(ctx, *fileName, nullBytes, fileSize)
 				if err != nil {
 					log.Fatal("Failed to fill gap with null bytes", "error", err)
 				}
@@ -145,7 +148,7 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 
 	// Write the data to the file at the specified offset
 	dataBytes := []byte(*data)
-	err = sm.WriteFile(*fileName, dataBytes, *offset)
+	err = sm.WriteFile(ctx, *fileName, dataBytes, *offset)
 	if err != nil {
 		log.Fatal("Failed to write data", "error", err)
 	}
@@ -177,8 +180,10 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 		os.Exit(1)
 	}
 
+	ctx := context.Background()
+
 	// Check if the file exists
-	fileID, err := sm.GetFileIDByName(*fileName)
+	fileID, err := sm.GetFileIDByName(ctx, *fileName)
 	if err != nil {
 		log.Fatal("Failed to check if file exists", "error", err)
 	}
@@ -191,7 +196,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 	}
 
 	// Get file size to determine how much to read if size is not specified
-	fileSize, err := sm.SizeOf(*fileName)
+	fileSize, err := sm.SizeOf(ctx, *fileName)
 	if err != nil {
 		log.Fatal("Failed to get file size", "error", err)
 	}
@@ -212,7 +217,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 			"size", readSize,
 			"version", *version)
 
-		data, err = sm.ReadFile(*fileName, *offset, readSize, storage.WithVersion(*version))
+		data, err = sm.ReadFile(ctx, *fileName, *offset, readSize, storage.WithVersion(*version))
 		if err != nil {
 			log.Fatal("Failed to read data with version", "error", err)
 		}
@@ -222,7 +227,7 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 			"offset", *offset,
 			"size", readSize)
 
-		data, err = sm.ReadFile(*fileName, *offset, readSize)
+		data, err = sm.ReadFile(ctx, *fileName, *offset, readSize)
 		if err != nil {
 			log.Fatal("Failed to read data", "error", err)
 		}
