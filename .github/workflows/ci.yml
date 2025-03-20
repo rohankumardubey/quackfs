@@ -47,6 +47,6 @@ jobs:
         psql -U postgres -c "SELECT 1"
         make test
       env:
-        POSTGRES_HOST: localhost
+        POSTGRES_HOST: postgres
         POSTGRES_PORT: 5432
-        POSTGRES_TEST_CONN: postgres://postgres:postgres@localhost:5432/quackfs_test?sslmode=disable
+        POSTGRES_TEST_CONN: postgres://postgres:postgres@postgres:5432/quackfs_test?sslmode=disable
