@@ -34,6 +34,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y fuse3
 
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          until pg_isready -h localhost -p 5432; do
+            echo "Waiting for PostgreSQL to be ready..."
+            sleep 10
+          done
+
       - name: Run tests
         run: make test
         env:
