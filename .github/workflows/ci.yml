@@ -41,12 +41,10 @@ jobs:
             sleep 10
           done
 
-      - name: Print PostgreSQL logs
-        run: docker logs $(docker ps -q --filter ancestor=postgres)
-
       - name: Run test query
         run: psql -U postgres -h localhost -p 5432 -c "SELECT 1"
         env:
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 5432
           POSTGRES_TEST_CONN: postgres://postgres:postgres@localhost:5432/quackfs_test?sslmode=disable
+          PGPASSWORD: postgres
