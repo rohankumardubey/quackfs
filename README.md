@@ -1,3 +1,5 @@
+![CI](https://github.com/vinimdocarmo/quackfs/actions/workflows/ci.yml/badge.svg)
+
 # QuackFS
 
 QuackFS is a FUSE-based filesystem that uses PostgreSQL and S3 as a backend for persistence. Its storage model is based on Differential Storage, meaning that it only stores the differences between versions of a file, resulting in storage efficiency and version history.
