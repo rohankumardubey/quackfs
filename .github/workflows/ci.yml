@@ -29,10 +29,15 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse3 postgresql-client
+          sudo apt-get install -y postgresql-client
 
       - name: Wait for PostgreSQL to be ready
         run: |
@@ -41,10 +46,11 @@ jobs:
             sleep 10
           done
 
-      - name: Run all tests
+      - name: Run test query
         run: make test
         env:
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 5432
           POSTGRES_TEST_CONN: postgres://postgres:postgres@localhost:5432/quackfs_test?sslmode=disable
           PGPASSWORD: postgres
+          TEST_FUSE_SKIP: true

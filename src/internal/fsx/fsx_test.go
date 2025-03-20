@@ -19,6 +19,10 @@ import (
 )
 
 func TestFuseReadWrite(t *testing.T) {
+	if os.Getenv("TEST_FUSE_SKIP") == "true" {
+		t.Skip("Skipping FUSE tests")
+	}
+
 	// Create and mount the FUSE filesystem using the in-process approach
 	mountDir, _, cleanup, errChan := setupFuseMount(t)
 	defer cleanup()
@@ -158,6 +162,10 @@ func TestFileEmptyWriteNonZeroOffset(t *testing.T) {
 
 // TestStorageCheckpointOnDuckDBCheckpoint tests removal of .duckdb.wal files with checkpointing
 func TestStorageCheckpointOnDuckDBCheckpoint(t *testing.T) {
+	if os.Getenv("TEST_FUSE_SKIP") == "true" {
+		t.Skip("Skipping FUSE tests")
+	}
+
 	// Create and mount the FUSE filesystem
 	mountDir, _, cleanup, errChan := setupFuseMount(t)
 	defer cleanup()

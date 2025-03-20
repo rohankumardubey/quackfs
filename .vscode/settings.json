@@ -1,5 +1,8 @@
 {
     "makefile.configureOnOpen": false,
+    "go.testEnvVars": {
+        "GOEXPERIMENT": "synctest"
+    },
     "go.testFlags": [
         "-failfast",
         "-timeout",
