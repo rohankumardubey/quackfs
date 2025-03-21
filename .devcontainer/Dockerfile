@@ -69,9 +69,18 @@ RUN apt-get update \
     && mkdir -p "/usr/local/etc/vscode-dev-containers/" \
     && mv -f /tmp/scripts/first-run-notice.txt /usr/local/etc/vscode-dev-containers/
 
-# Install DuckDB
-RUN wget -O /tmp/duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.2.1/duckdb_cli-linux-aarch64.zip
-RUN unzip -o /tmp/duckdb.zip -d /usr/local/bin/
+# Install DuckDB based on architecture
+RUN ARCH=$(arch) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        DUCKDB_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        DUCKDB_ARCH="amd64"; \
+    else \
+        echo "Unsupported architecture: $ARCH"; \
+        exit 1; \
+    fi && \
+    wget -O /tmp/duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.2.1/duckdb_cli-linux-${DUCKDB_ARCH}.zip && \
+    unzip -o /tmp/duckdb.zip -d /usr/local/bin/
 
 # Instal awslocal
 RUN pip install awscli
