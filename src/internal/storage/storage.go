@@ -204,7 +204,6 @@ func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64,
 	sm.mu.RLock() // Read lock is sufficient for reading
 	defer sm.mu.RUnlock()
 
-	// Process options
 	options := readFileOpts{}
 	for _, opt := range opts {
 		opt(&options)
@@ -226,7 +225,6 @@ func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64,
 			"size", size)
 	}
 
-	// Begin transaction in order to have consistent reads
 	tx, err := sm.db.BeginTx(ctx, &sql.TxOptions{
 		ReadOnly: true,
 	})
@@ -250,7 +248,6 @@ func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64,
 		}
 	}()
 
-	// Get the file ID from the file name
 	fileID, err := sm.GetFileIDByName(ctx, filename, withTx(tx))
 	if fileID == 0 {
 		sm.log.Error("File not found", "filename", filename)

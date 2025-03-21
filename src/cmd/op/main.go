@@ -302,7 +302,6 @@ func newDB(log *log.Logger) *sql.DB {
 
 	log.Debug("Using env vars", "host", host, "port", port, "user", user, "dbname", dbname)
 
-	// Construct the connection string
 	conn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
 

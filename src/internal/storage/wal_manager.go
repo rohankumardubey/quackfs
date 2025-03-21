@@ -172,7 +172,6 @@ func (wm *WALManager) Read(filename string, offset uint64, size uint64) ([]byte,
 
 	filePath := wm.GetFilePath(filename)
 
-	// Open the file
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -183,16 +182,13 @@ func (wm *WALManager) Read(filename string, offset uint64, size uint64) ([]byte,
 	}
 	defer file.Close()
 
-	// Create a buffer to hold the data
 	data := make([]byte, size)
 
-	// Seek to the offset
 	_, err = file.Seek(int64(offset), 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to seek in WAL file: %w", err)
 	}
 
-	// Read the data
 	n, err := file.Read(data)
 	if err != nil && err.Error() != "EOF" {
 		return nil, fmt.Errorf("failed to read from WAL file: %w", err)
@@ -213,20 +209,17 @@ func (wm *WALManager) Write(filename string, data []byte, offset uint64) (int, e
 
 	filePath := wm.GetFilePath(filename)
 
-	// Open the file with write permissions, create if it doesn't exist
 	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open WAL file for writing: %w", err)
 	}
 	defer file.Close()
 
-	// Seek to the offset
 	_, err = file.Seek(int64(offset), 0)
 	if err != nil {
 		return 0, fmt.Errorf("failed to seek in WAL file: %w", err)
 	}
 
-	// Write the data
 	n, err := file.Write(data)
 	if err != nil {
 		return 0, fmt.Errorf("failed to write to WAL file: %w", err)
