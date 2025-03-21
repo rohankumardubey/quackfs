@@ -1,14 +1,19 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/charmbracelet/log"
 )
 
@@ -47,21 +52,25 @@ type metadata struct {
 var ErrNotFound = errors.New("not found")
 
 type Manager struct {
-	db       *sql.DB
-	log      *log.Logger
-	mu       sync.RWMutex     // Add a mutex to protect activeLayers
-	memtable map[int64]*layer // Stores a mapping of file ids to their active layer
+	db           *sql.DB
+	log          *log.Logger
+	mu           sync.RWMutex     // Add a mutex to protect activeLayers
+	memtable     map[int64]*layer // Stores a mapping of file ids to their active layer
+	s3Client     *s3.Client
+	s3BucketName string
 }
 
 // NewManager creates (or reloads) a StorageManager using the provided metadataStore.
-func NewManager(db *sql.DB, log *log.Logger) *Manager {
+func NewManager(db *sql.DB, s3Client *s3.Client, bucketName string, log *log.Logger) *Manager {
 	managerLog := log.With()
 	managerLog.SetPrefix("💽 storage")
 
 	sm := &Manager{
-		db:       db,
-		log:      managerLog,
-		memtable: make(map[int64]*layer),
+		db:           db,
+		log:          managerLog,
+		memtable:     make(map[int64]*layer),
+		s3Client:     s3Client,
+		s3BucketName: bucketName,
 	}
 
 	return sm
@@ -387,7 +396,7 @@ func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64,
 		if !chunk.flushed {
 			data = activeLayer.data[chunk.layerRange[0]:chunk.layerRange[1]]
 		} else {
-			data, err = getChunkData(ctx, sm.db, chunk)
+			data, err = getChunkData(ctx, sm.db, sm.s3Client, sm.s3BucketName, chunk)
 			if err != nil {
 				sm.log.Error("Failed to get chunk data", "error", err)
 				return nil, fmt.Errorf("failed to get chunk data: %w", err)
@@ -414,7 +423,6 @@ func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64,
 		endPos := bufferPos + dataSize
 
 		if endPos <= uint64(len(buf)) {
-
 			copy(buf[bufferPos:endPos], data[chunkStartPos:chunkStartPos+dataSize])
 		} else {
 			// Handle case where chunk extends beyond current buffer
@@ -733,10 +741,26 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 		return fmt.Errorf("failed to insert new version: %w", err)
 	}
 
-	// Store the current active layer data with the version
-	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id, data) VALUES ($1, $2, $3) RETURNING id;`
+	// Generate S3 object key
+	s3ObjectKey := fmt.Sprintf("layers/%s/%d-%d", filename, fileID, versionID)
+
+	// Upload data to S3 using a reader to avoid loading all data into memory again
+	r := bytes.NewReader(activeLayer.data)
+	_, err = sm.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:            aws.String(sm.s3BucketName),
+		Key:               aws.String(s3ObjectKey),
+		Body:              r,
+		ChecksumAlgorithm: types.ChecksumAlgorithmCrc32,
+	})
+	if err != nil {
+		sm.log.Error("Failed to upload data to S3", "error", err)
+		return fmt.Errorf("failed to upload data to S3: %w", err)
+	}
+
+	// Store the layer metadata with S3 object key
+	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id, s3_object_key) VALUES ($1, $2, $3) RETURNING id;`
 	var layerID int64
-	err = tx.QueryRowContext(ctx, insertLayerQ, fileID, versionID, activeLayer.data).Scan(&layerID)
+	err = tx.QueryRowContext(ctx, insertLayerQ, fileID, versionID, s3ObjectKey).Scan(&layerID)
 	if err != nil {
 		sm.log.Error("Failed to commit layer with version", "error", err)
 		return fmt.Errorf("failed to commit layer with version: %w", err)
@@ -760,7 +784,7 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 	// Reset the active layer
 	delete(sm.memtable, fileID)
 
-	sm.log.Debug("Checkpoint successful", "layerID", layerID)
+	sm.log.Debug("Checkpoint successful", "layerID", layerID, "s3ObjectKey", s3ObjectKey)
 
 	return nil
 }
@@ -824,23 +848,49 @@ func rangesOverlap(range1 [2]uint64, range2 [2]uint64) bool {
 	return range1[0] < range2[1] && range2[0] < range1[1]
 }
 
-func getChunkData(ctx context.Context, db *sql.DB, c metadata) ([]byte, error) {
-	var data []byte
-	// Calculate the substring size (end - start)
-	var start int64 = int64(c.layerRange[0]) + 1 // the string is 1-indexed
-	var size int64 = int64(c.layerRange[1]) - int64(c.layerRange[0])
+// getChunkData retrieves chunk data from S3 using range requests
+func getChunkData(ctx context.Context, db *sql.DB, s3Client *s3.Client, bucketName string, c metadata) ([]byte, error) {
+	var s3ObjectKey string
 
-	// Data is now stored directly in snapshot_layers rather than chunks
+	// Get the S3 object key from the snapshot_layers table
 	err := db.QueryRowContext(ctx, `
-		SELECT substring(data from $2 for $3)
+		SELECT s3_object_key
 		FROM snapshot_layers
 		WHERE id = $1
-	`, c.layerID, start, size).Scan(&data)
+	`, c.layerID).Scan(&s3ObjectKey)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return []byte{}, nil
 		}
-		return nil, fmt.Errorf("error retrieving chunk data: %w", err)
+		return nil, fmt.Errorf("error retrieving S3 object key: %w", err)
+	}
+
+	// Calculate the expected size
+	expectedSize := c.layerRange[1] - c.layerRange[0]
+
+	// Calculate the range - using inclusive range format for HTTP Range header
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", c.layerRange[0], c.layerRange[1]-1)
+
+	// Get the object from S3 with range request
+	resp, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(s3ObjectKey),
+		Range:  aws.String(rangeHeader),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving data from S3: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body completely using io.ReadAll
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading data from S3 response: %w", err)
+	}
+
+	// Validate we got exactly the number of bytes expected
+	if uint64(len(data)) != expectedSize {
+		return nil, fmt.Errorf("received incorrect number of bytes from S3: got %d, expected %d", len(data), expectedSize)
 	}
 
 	return data, nil

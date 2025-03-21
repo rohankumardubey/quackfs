@@ -24,6 +24,21 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      
+      localstack:
+        image: localstack/localstack:latest
+        env:
+          SERVICES: s3
+          DEFAULT_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          HOSTNAME_EXTERNAL: localhost
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Check out repository code
@@ -46,6 +61,11 @@ jobs:
             sleep 10
           done
 
+      - name: Create S3 bucket
+        run: |
+          pip install awscli awscli-local
+          awslocal s3 mb s3://quackfs-bucket-test
+
       - name: Run test query
         run: make test
         env:
@@ -54,3 +74,5 @@ jobs:
           POSTGRES_TEST_CONN: postgres://postgres:postgres@localhost:5432/quackfs_test?sslmode=disable
           PGPASSWORD: postgres
           TEST_FUSE_SKIP: true
+          AWS_ENDPOINT_URL: http://localhost:4566
+          AWS_REGION: us-east-1

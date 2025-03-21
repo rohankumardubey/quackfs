@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS snapshot_layers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     active INTEGER DEFAULT 0,
     version_id INTEGER DEFAULT NULL REFERENCES versions(id),
-    data BYTEA NOT NULL,
+    s3_object_key VARCHAR(255) NOT NULL,
     CHECK ((active = 1 AND version_id IS NULL) OR (active = 0 AND version_id IS NOT NULL)), -- version_id is NULL for the active snapshot layer
     UNIQUE (file_id, version_id)
 );

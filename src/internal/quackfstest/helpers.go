@@ -1,10 +1,15 @@
 package quackfstest
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/lib/pq"
 
 	"github.com/vinimdocarmo/quackfs/src/internal/logger"
@@ -21,7 +26,41 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 	// Create a test log
 	log := logger.New(os.Stderr)
 
-	sm := storage.NewManager(db, log)
+	// Set up S3 client for tests
+	s3Endpoint := os.Getenv("AWS_ENDPOINT_URL")
+	if s3Endpoint == "" {
+		s3Endpoint = "http://localhost:4566"
+	}
+
+	s3Region := os.Getenv("AWS_REGION")
+	if s3Region == "" {
+		s3Region = "us-east-1"
+	}
+
+	s3BucketName := os.Getenv("S3_BUCKET_NAME")
+	if s3BucketName == "" {
+		s3BucketName = "quackfs-bucket-test"
+	}
+
+	// Load AWS SDK configuration with static credentials for LocalStack
+	cfg, err := config.LoadDefaultConfig(context.Background(),
+		config.WithRegion(s3Region),
+		// Use static credentials for LocalStack
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			"test", "test", "test")),
+	)
+	if err != nil {
+		t.Fatalf("Failed to configure AWS client: %v", err)
+	}
+
+	// Create S3 client with LocalStack endpoint
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(s3Endpoint)
+		o.UsePathStyle = true // Required for LocalStack
+		o.DisableLogOutputChecksumValidationSkipped = true
+	})
+
+	sm := storage.NewManager(db, s3Client, s3BucketName, log)
 
 	cleanup := func() {
 		// delete all rows in all tables

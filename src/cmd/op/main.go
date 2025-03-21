@@ -8,6 +8,10 @@ import (
 	"os"
 	"slices"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	log "github.com/charmbracelet/log"
 	_ "github.com/lib/pq"
 	"github.com/vinimdocarmo/quackfs/src/internal/logger"
@@ -34,8 +38,35 @@ func main() {
 	db := newDB(log)
 	defer db.Close()
 
+	// Set up S3 client
+	s3Endpoint := getEnvOrDefault("AWS_ENDPOINT_URL", "http://localhost:4566")
+	s3Region := getEnvOrDefault("AWS_REGION", "us-east-1")
+	s3BucketName := getEnvOrDefault("S3_BUCKET_NAME", "quackfs-bucket")
+
+	// Load AWS SDK configuration
+	cfgOptions := []func(*config.LoadOptions) error{
+		config.WithRegion(s3Region),
+	}
+
+	log.Debug("Using static credentials for LocalStack")
+	cfgOptions = append(cfgOptions,
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			"test", "test", "test")))
+
+	cfg, err := config.LoadDefaultConfig(context.Background(), cfgOptions...)
+	if err != nil {
+		log.Fatal("Failed to configure AWS client", "error", err)
+	}
+
+	// Create an S3 client with custom endpoint for LocalStack
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(s3Endpoint)
+		o.UsePathStyle = true // Required for LocalStack
+		o.DisableLogOutputChecksumValidationSkipped = true
+	})
+
 	// Create a storage manager
-	sm := storage.NewManager(db, log)
+	sm := storage.NewManager(db, s3Client, s3BucketName, log)
 	defer sm.Close()
 
 	// Execute the appropriate command

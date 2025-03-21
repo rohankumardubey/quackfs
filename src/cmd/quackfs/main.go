@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -8,6 +9,10 @@ import (
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/lib/pq"
 	"github.com/vinimdocarmo/quackfs/src/internal/fsx"
 	"github.com/vinimdocarmo/quackfs/src/internal/logger"
@@ -60,7 +65,36 @@ Differential Storage System for DuckDB
 	}
 	defer db.Close()
 
-	sm := storage.NewManager(db, log)
+	// Initialize AWS S3 client (using LocalStack)
+	s3Endpoint := getEnvOrDefault("AWS_ENDPOINT_URL", "http://localhost:4566")
+	s3Region := getEnvOrDefault("AWS_REGION", "us-east-1")
+	s3BucketName := getEnvOrDefault("S3_BUCKET_NAME", "quackfs-bucket")
+
+	log.Debug("Using S3 settings", "endpoint", s3Endpoint, "region", s3Region, "bucket", s3BucketName)
+
+	// Load AWS SDK configuration
+	cfgOptions := []func(*config.LoadOptions) error{
+		config.WithRegion(s3Region),
+	}
+
+	// Add static credentials for LocalStack
+	cfgOptions = append(cfgOptions,
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			"test", "test", "test")))
+
+	cfg, err := config.LoadDefaultConfig(context.Background(), cfgOptions...)
+	if err != nil {
+		log.Fatal("Failed to configure AWS client", "error", err)
+	}
+
+	// Create an S3 client with custom endpoint for LocalStack
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(s3Endpoint)
+		o.UsePathStyle = true // Required for LocalStack
+		o.DisableLogOutputChecksumValidationSkipped = true
+	})
+
+	sm := storage.NewManager(db, s3Client, s3BucketName, log)
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint, fuse.FSName("quackfs"))
@@ -71,7 +105,8 @@ Differential Storage System for DuckDB
 
 	log.Info("FUSE filesystem mounted", "mountpoint", *mountpoint)
 	log.Info("Storing WAL file in", "path", *walPath)
-	log.Info("Using PostgreSQL for persistence", "host", os.Getenv("POSTGRES_HOST"))
+	log.Info("Using PostgreSQL for metadata", "host", os.Getenv("POSTGRES_HOST"))
+	log.Info("Using S3 for data storage", "endpoint", s3Endpoint, "bucket", s3BucketName, "region", s3Region)
 
 	// Serve the filesystem. fs.Serve blocks until the filesystem is unmounted.
 	if err := fs.Serve(c, fsx.NewFS(sm, log, *walPath)); err != nil {
