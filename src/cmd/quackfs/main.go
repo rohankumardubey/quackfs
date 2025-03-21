@@ -17,6 +17,7 @@ import (
 	"github.com/vinimdocarmo/quackfs/src/internal/fsx"
 	"github.com/vinimdocarmo/quackfs/src/internal/logger"
 	"github.com/vinimdocarmo/quackfs/src/internal/storage"
+	objectstore "github.com/vinimdocarmo/quackfs/src/internal/storage/object"
 )
 
 func main() {
@@ -94,9 +95,9 @@ Differential Storage System for DuckDB
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
-	objectStore := storage.NewS3Store(s3Client, s3BucketName)
+	objectStore := objectstore.NewS3(s3Client, s3BucketName)
 
-	sm := storage.NewManager(db, objectStore, s3BucketName, log)
+	sm := storage.NewManager(db, objectStore, log)
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint, fuse.FSName("quackfs"))

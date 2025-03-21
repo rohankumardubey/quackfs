@@ -16,6 +16,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/vinimdocarmo/quackfs/src/internal/logger"
 	"github.com/vinimdocarmo/quackfs/src/internal/storage"
+	objectstore "github.com/vinimdocarmo/quackfs/src/internal/storage/object"
 )
 
 func main() {
@@ -64,10 +65,10 @@ func main() {
 		o.UsePathStyle = true // Required for LocalStack
 	})
 
-	objectStore := storage.NewS3Store(s3Client, s3BucketName)
+	objectStore := objectstore.NewS3(s3Client, s3BucketName)
 
 	// Create a storage manager
-	sm := storage.NewManager(db, objectStore, s3BucketName, log)
+	sm := storage.NewManager(db, objectStore, log)
 	defer sm.Close()
 
 	// Execute the appropriate command
@@ -106,7 +107,6 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 	fileName := writeCmd.String("file", "", "Target file to write to")
 	offset := writeCmd.Uint64("offset", 0, "Offset in the file to start writing from")
 	data := writeCmd.String("data", "", "ASCII data to write to the file")
-	allowBeyondSize := writeCmd.Bool("allow-beyond-size", true, "Allow writing beyond current file size (fills gap with null bytes)")
 
 	// Parse the flags
 	writeCmd.Parse(os.Args[1:])
@@ -126,61 +126,9 @@ func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
 
 	ctx := context.Background()
 
-	// Check if the file exists
-	fileID, err := sm.GetFileIDByName(ctx, *fileName)
-	if err != nil {
-		log.Fatal("Failed to check if file exists", "error", err)
-	}
-
-	// If the file doesn't exist, create it
-	if fileID == 0 {
-		log.Info("File does not exist, creating it", "fileName", *fileName)
-		fileID, err = sm.InsertFile(ctx, *fileName)
-		if err != nil {
-			log.Fatal("Failed to create file", "error", err)
-		}
-	}
-
-	// Get current file size
-	fileSize := uint64(0)
-	if fileID != 0 {
-		fileSize, err = sm.SizeOf(ctx, *fileName)
-		if err != nil {
-			log.Fatal("Failed to get file size", "error", err)
-		}
-	}
-
-	// If writing beyond file size and it's allowed, fill the gap with null bytes
-	if *offset > fileSize && *allowBeyondSize {
-		if *offset > fileSize {
-			log.Info("Writing beyond file size, filling gap with null bytes",
-				"fileName", *fileName,
-				"currentSize", fileSize,
-				"targetOffset", *offset)
-
-			// Calculate the gap size
-			gapSize := *offset - fileSize
-
-			// Only fill the gap if it's not too large (prevent accidental huge allocations)
-			if gapSize > 1024*1024*10 { // 10MB limit
-				log.Fatal("Gap size too large, aborting", "gapSize", gapSize)
-			}
-
-			// Fill the gap with null bytes if needed
-			if gapSize > 0 {
-				nullBytes := make([]byte, gapSize)
-				err := sm.WriteFile(ctx, *fileName, nullBytes, fileSize)
-				if err != nil {
-					log.Fatal("Failed to fill gap with null bytes", "error", err)
-				}
-				log.Info("Gap filled with null bytes", "gapSize", gapSize)
-			}
-		}
-	}
-
 	// Write the data to the file at the specified offset
 	dataBytes := []byte(*data)
-	err = sm.WriteFile(ctx, *fileName, dataBytes, *offset)
+	err := sm.WriteFile(ctx, *fileName, dataBytes, *offset)
 	if err != nil {
 		log.Fatal("Failed to write data", "error", err)
 	}
@@ -214,19 +162,6 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 
 	ctx := context.Background()
 
-	// Check if the file exists
-	fileID, err := sm.GetFileIDByName(ctx, *fileName)
-	if err != nil {
-		log.Fatal("Failed to check if file exists", "error", err)
-	}
-
-	// If the file doesn't exist, report an error
-	if fileID == 0 {
-		log.Error("File does not exist", "fileName", *fileName)
-		fmt.Printf("Error: File '%s' does not exist\n", *fileName)
-		os.Exit(1)
-	}
-
 	// Get file size to determine how much to read if size is not specified
 	fileSize, err := sm.SizeOf(ctx, *fileName)
 	if err != nil {
@@ -241,28 +176,9 @@ func executeReadCommand(sm *storage.Manager, log *log.Logger) {
 
 	var data []byte
 
-	// Read the data from the file, using version-specific method if a version tag is provided
-	if *version != "" {
-		log.Info("Reading file content with version",
-			"fileName", *fileName,
-			"offset", *offset,
-			"size", readSize,
-			"version", *version)
-
-		data, err = sm.ReadFile(ctx, *fileName, *offset, readSize, storage.WithVersion(*version))
-		if err != nil {
-			log.Fatal("Failed to read data with version", "error", err)
-		}
-	} else {
-		log.Info("Reading file content",
-			"fileName", *fileName,
-			"offset", *offset,
-			"size", readSize)
-
-		data, err = sm.ReadFile(ctx, *fileName, *offset, readSize)
-		if err != nil {
-			log.Fatal("Failed to read data", "error", err)
-		}
+	data, err = sm.ReadFile(ctx, *fileName, *offset, readSize, storage.WithVersion(*version))
+	if err != nil {
+		log.Fatal("Failed to read data", "error", err)
 	}
 
 	// Print file information

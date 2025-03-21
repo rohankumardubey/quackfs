@@ -94,7 +94,7 @@ localstack.test.init:
 		echo "Creating test bucket quackfs-bucket-test..."; \
 		awslocal s3 mb s3://quackfs-bucket-test; \
 	else \
-		echo "quackfs-bucket-test already exists. Let's rebuild it."; \
+		echo "quackfs-bucket-test already exists. Let's clean it."; \
 		awslocal s3 rm s3://quackfs-bucket-test --recursive; \
 		awslocal s3 mb s3://quackfs-bucket-test; \
 	fi

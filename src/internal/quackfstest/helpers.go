@@ -14,6 +14,7 @@ import (
 
 	"github.com/vinimdocarmo/quackfs/src/internal/logger"
 	"github.com/vinimdocarmo/quackfs/src/internal/storage"
+	object "github.com/vinimdocarmo/quackfs/src/internal/storage/object"
 )
 
 func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
@@ -60,9 +61,9 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
-	objectStore := storage.NewS3Store(s3Client, s3BucketName)
+	objectStore := object.NewS3(s3Client, s3BucketName)
 
-	sm := storage.NewManager(db, objectStore, s3BucketName, log)
+	sm := storage.NewManager(db, objectStore, log)
 
 	cleanup := func() {
 		// delete all rows in all tables

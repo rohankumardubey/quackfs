@@ -1,4 +1,4 @@
-package storage
+package wal
 
 import (
 	"context"
@@ -12,9 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// Verify that Manager implements StorageManagerCheckpointer
-var _ DBCheckpointer = (*Manager)(nil)
 
 // For testing purposes, we'll use a simple struct that just implements the methods we need
 type mockStorageManager struct {

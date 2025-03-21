@@ -1,4 +1,4 @@
-package storage
+package objectstore
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ type S3Store struct {
 	bucketName string
 }
 
-func NewS3Store(client *s3.Client, bucketName string) *S3Store {
+func NewS3(client *s3.Client, bucketName string) *S3Store {
 	return &S3Store{
 		client:     client,
 		bucketName: bucketName,

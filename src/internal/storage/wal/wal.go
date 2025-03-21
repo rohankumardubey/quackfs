@@ -1,4 +1,4 @@
-package storage
+package wal
 
 import (
 	"context"
@@ -24,38 +24,33 @@ type DBCheckpointer interface {
 type WALManager struct {
 	walPath string         // Path where WAL files are stored
 	log     *log.Logger    // Logger for WAL operations
-	sm      DBCheckpointer // Reference to the storage manager for checkpointing
+	mgr     DBCheckpointer // Reference to the storage manager for checkpointing
 	mu      sync.RWMutex   // Mutex to protect concurrent operations
 }
 
-// NewWALManager creates a new WAL manager instance.
-func NewWALManager(walPath string, sm DBCheckpointer, logger *log.Logger) *WALManager {
+func NewWALManager(walPath string, mgr DBCheckpointer, logger *log.Logger) *WALManager {
 	walLog := logger.With()
 	walLog.SetPrefix("📝 WAL")
 
 	return &WALManager{
 		walPath: walPath,
 		log:     walLog,
-		sm:      sm,
+		mgr:     mgr,
 	}
 }
 
-// IsWALFile checks if a file has the .duckdb.wal extension
 func IsWALFile(filename string) bool {
 	return strings.HasSuffix(filename, ".duckdb.wal")
 }
 
-// GetDBFilename returns the database filename without the .wal extension
 func (wm *WALManager) GetDBFilename(walFilename string) string {
 	return strings.TrimSuffix(walFilename, ".wal")
 }
 
-// GetFilePath returns the full path to the WAL file in the filesystem
 func (wm *WALManager) GetFilePath(filename string) string {
 	return filepath.Join(wm.walPath, filename)
 }
 
-// GetFileSize returns the size of a WAL file in bytes
 func (wm *WALManager) GetFileSize(filename string) (uint64, error) {
 	wm.mu.RLock()
 	defer wm.mu.RUnlock()
@@ -73,7 +68,6 @@ func (wm *WALManager) GetFileSize(filename string) (uint64, error) {
 	return uint64(fileInfo.Size()), nil
 }
 
-// GetModTime returns the modification time of a WAL file
 func (wm *WALManager) GetModTime(filename string) (time.Time, error) {
 	wm.mu.RLock()
 	defer wm.mu.RUnlock()
@@ -91,7 +85,6 @@ func (wm *WALManager) GetModTime(filename string) (time.Time, error) {
 	return fileInfo.ModTime(), nil
 }
 
-// Create creates a new WAL file
 func (wm *WALManager) Create(filename string) error {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
@@ -102,7 +95,6 @@ func (wm *WALManager) Create(filename string) error {
 
 	filePath := wm.GetFilePath(filename)
 
-	// Create the directory if it doesn't exist
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory for WAL file: %w", err)
@@ -118,7 +110,6 @@ func (wm *WALManager) Create(filename string) error {
 	return nil
 }
 
-// Exists checks if a WAL file exists
 func (wm *WALManager) Exists(filename string) (bool, error) {
 	wm.mu.RLock()
 	defer wm.mu.RUnlock()
@@ -136,7 +127,6 @@ func (wm *WALManager) Exists(filename string) (bool, error) {
 	return true, nil
 }
 
-// ListWALFiles returns a list of all WAL files in the WAL directory
 func (wm *WALManager) ListWALFiles() ([]string, error) {
 	wm.mu.RLock()
 	defer wm.mu.RUnlock()
@@ -161,7 +151,6 @@ func (wm *WALManager) ListWALFiles() ([]string, error) {
 	return walFiles, nil
 }
 
-// Read reads data from a WAL file at the specified offset and size
 func (wm *WALManager) Read(filename string, offset uint64, size uint64) ([]byte, error) {
 	wm.mu.RLock()
 	defer wm.mu.RUnlock()
@@ -175,7 +164,6 @@ func (wm *WALManager) Read(filename string, offset uint64, size uint64) ([]byte,
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// If the file does not exist yet, return empty data
 			return []byte{}, nil
 		}
 		return nil, fmt.Errorf("failed to open WAL file: %w", err)
@@ -238,33 +226,23 @@ func (wm *WALManager) Remove(ctx context.Context, filename string) error {
 		return fmt.Errorf("invalid WAL file name: %s", filename)
 	}
 
-	// Generate a checkpoint ID
-	checkpointID := uuid.New().String()
-
-	// Get the database filename without .wal extension
 	dbFilename := wm.GetDBFilename(filename)
+	checkpointID := fmt.Sprintf("checkpoint-%s", uuid.New().String())
 
-	// Checkpoint the database file in the storage manager
-	wm.log.Info("Removing WAL file, checkpointing database",
-		"walFile", filename,
-		"dbFile", dbFilename,
-		"checkpointID", checkpointID)
-
-	if err := wm.sm.Checkpoint(ctx, dbFilename, checkpointID); err != nil {
+	if err := wm.mgr.Checkpoint(ctx, dbFilename, checkpointID); err != nil {
+		wm.log.Error("Failed to checkpoint database", "dbFilename", dbFilename, "error", err)
 		return fmt.Errorf("failed to checkpoint database: %w", err)
 	}
 
-	// Remove the WAL file
-	filePath := wm.GetFilePath(filename)
-	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to remove WAL file: %w", err)
+	if err := os.Remove(wm.GetFilePath(filename)); err != nil {
+		wm.log.Error("Failed to delete WAL file", "filename", filename, "error", err)
+		return err
 	}
 
 	wm.log.Info("WAL file removed successfully", "filename", filename)
 	return nil
 }
 
-// Sync flushes any buffered data to disk
 func (wm *WALManager) Sync(filename string) error {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
