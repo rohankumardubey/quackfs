@@ -70,13 +70,8 @@ localstack.init:
 			-p 127.0.0.1:4510-4559:4510-4559 \
 			-v /var/run/docker.sock:/var/run/docker.sock \
 			localstack/localstack; \
-	else \
-		echo "LocalStack container is already running."; \
-		echo "--- LocalStack logs:"; \
-		docker logs --tail 30 localstack; \
-		echo "---"; \
 	fi; \
-	if [ -z "$$(docker exec -it localstack awslocal s3 ls | grep quackfs-bucket)" ]; then \
+	if ! awslocal s3 ls | grep " quackfs-bucket$$" > /dev/null; then \
 		echo "Creating quackfs-bucket..."; \
 		awslocal s3 mb s3://quackfs-bucket; \
 	else \
