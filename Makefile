@@ -53,10 +53,40 @@ db.test.drop:
 	@echo "Cleaning PostgreSQL test database"
 	@psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS quackfs_test;" || true
 
-run: clean build db.init
+run: clean build db.init localstack.init
 	mkdir -p /tmp/fuse
 	./quackfs.exe -mount /tmp/fuse
 
 load:
 	./duckdb.sh
 	duckdb -f ./duckdb.sql /tmp/fuse/db.duckdb
+
+localstack.init:
+	@if [ -z "$$(docker ps -q -f name=localstack)" ]; then \
+		echo "Starting LocalStack container..."; \
+		docker run \
+			--rm -it -d --name localstack \
+			-p 127.0.0.1:4566:4566 \
+			-p 127.0.0.1:4510-4559:4510-4559 \
+			-v /var/run/docker.sock:/var/run/docker.sock \
+			localstack/localstack; \
+	else \
+		echo "LocalStack container is already running."; \
+		echo "--- LocalStack logs:"; \
+		docker logs --tail 30 localstack; \
+		echo "---"; \
+	fi; \
+	if [ -z "$$(docker exec -it localstack awslocal s3 ls | grep quackfs-bucket)" ]; then \
+		echo "Creating quackfs-bucket..."; \
+		awslocal s3 mb s3://quackfs-bucket; \
+	else \
+		echo "quackfs-bucket already exists."; \
+	fi
+
+localstack.drop:
+	@if [ -n "$$(docker ps -q -f name=localstack)" ]; then \
+		echo "Stopping LocalStack container..."; \
+		docker stop localstack || true; \
+		echo "Removing LocalStack container..."; \
+		docker rm --force localstack || true; \
+	fi

@@ -61,8 +61,8 @@ RUN apt-get update \
     && apt-get -y install build-essential cmake cppcheck valgrind clang lldb llvm gdb wget \
     # Install tools and shells not in common script
     && apt-get install -yq vim vim-doc xtail software-properties-common libsecret-1-dev \
-    # Install FUSE lib which is need for this project
-    && apt-get install -y fuse3 \
+    # Install libs which is need for this project
+    && apt-get install -y fuse3 python3-pip \
     # Clean up
     && apt-get autoremove -y && apt-get clean -y \
     # Move first run notice to right spot
@@ -72,6 +72,10 @@ RUN apt-get update \
 # Install DuckDB
 RUN wget -O /tmp/duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.2.1/duckdb_cli-linux-aarch64.zip
 RUN unzip -o /tmp/duckdb.zip -d /usr/local/bin/
+
+# Instal awslocal
+RUN pip install awscli
+RUN pip install awscli-local
 
 # Default to bash shell (other shells available at /usr/bin/fish and /usr/bin/zsh)
 ENV SHELL=/bin/zsh \
