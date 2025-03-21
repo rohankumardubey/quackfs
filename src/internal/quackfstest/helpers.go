@@ -60,7 +60,9 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
-	sm := storage.NewManager(db, s3Client, s3BucketName, log)
+	objectStore := storage.NewS3Store(s3Client, s3BucketName)
+
+	sm := storage.NewManager(db, objectStore, s3BucketName, log)
 
 	cleanup := func() {
 		// delete all rows in all tables

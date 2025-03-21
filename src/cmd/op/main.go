@@ -62,11 +62,12 @@ func main() {
 	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(s3Endpoint)
 		o.UsePathStyle = true // Required for LocalStack
-		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
+	objectStore := storage.NewS3Store(s3Client, s3BucketName)
+
 	// Create a storage manager
-	sm := storage.NewManager(db, s3Client, s3BucketName, log)
+	sm := storage.NewManager(db, objectStore, s3BucketName, log)
 	defer sm.Close()
 
 	// Execute the appropriate command

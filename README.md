@@ -25,7 +25,7 @@ It was created for learning purposes and to explore the idea of Differential Sto
 This project is currently in development. Some of planned features are:
 
 - [x] Use PostgreSQL for metadata and data persistence
-- [ ] Use S3 for data storage instead of Postgres
+- [x] Use S3 for data storage instead of Postgres
 - [ ] Time travel: be able to query the database from old versions
 - [ ] Creating new databases from a specific point in time (sharing data with zero copy)
 - [ ] Merging of snapshot layers

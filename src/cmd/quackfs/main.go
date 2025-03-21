@@ -94,7 +94,9 @@ Differential Storage System for DuckDB
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
-	sm := storage.NewManager(db, s3Client, s3BucketName, log)
+	objectStore := storage.NewS3Store(s3Client, s3BucketName)
+
+	sm := storage.NewManager(db, objectStore, s3BucketName, log)
 
 	// Mount the FUSE filesystem.
 	c, err := fuse.Mount(*mountpoint, fuse.FSName("quackfs"))

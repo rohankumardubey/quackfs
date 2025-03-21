@@ -1,19 +1,14 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/charmbracelet/log"
 )
 
@@ -51,26 +46,32 @@ type metadata struct {
 
 var ErrNotFound = errors.New("not found")
 
+type ObjectStore interface {
+	// PutObject uploads data to the object store.
+	PutObject(ctx context.Context, key string, data []byte) error
+	// GetObject returns a slice of data from the given offset up to size bytes.
+	// Range is inclusive of the start and the end (i.e. [start, end])
+	GetObject(ctx context.Context, key string, dataRange [2]uint64) ([]byte, error)
+}
+
 type Manager struct {
-	db           *sql.DB
-	log          *log.Logger
-	mu           sync.RWMutex     // Add a mutex to protect activeLayers
-	memtable     map[int64]*layer // Stores a mapping of file ids to their active layer
-	s3Client     *s3.Client
-	s3BucketName string
+	db          *sql.DB
+	log         *log.Logger
+	mu          sync.RWMutex     // Add a mutex to protect activeLayers
+	memtable    map[int64]*layer // Stores a mapping of file ids to their active layer
+	objectStore ObjectStore
 }
 
 // NewManager creates (or reloads) a StorageManager using the provided metadataStore.
-func NewManager(db *sql.DB, s3Client *s3.Client, bucketName string, log *log.Logger) *Manager {
+func NewManager(db *sql.DB, objectStore ObjectStore, bucketName string, log *log.Logger) *Manager {
 	managerLog := log.With()
 	managerLog.SetPrefix("💽 storage")
 
 	sm := &Manager{
-		db:           db,
-		log:          managerLog,
-		memtable:     make(map[int64]*layer),
-		s3Client:     s3Client,
-		s3BucketName: bucketName,
+		db:          db,
+		log:         managerLog,
+		memtable:    make(map[int64]*layer),
+		objectStore: objectStore,
 	}
 
 	return sm
@@ -396,7 +397,7 @@ func (sm *Manager) ReadFile(ctx context.Context, filename string, offset uint64,
 		if !chunk.flushed {
 			data = activeLayer.data[chunk.layerRange[0]:chunk.layerRange[1]]
 		} else {
-			data, err = getChunkData(ctx, sm.db, sm.s3Client, sm.s3BucketName, chunk)
+			data, err = getChunkData(ctx, sm.db, sm.objectStore, chunk)
 			if err != nil {
 				sm.log.Error("Failed to get chunk data", "error", err)
 				return nil, fmt.Errorf("failed to get chunk data: %w", err)
@@ -693,7 +694,6 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 	sm.mu.Lock()         // Lock before accessing activeLayers
 	defer sm.mu.Unlock() // Ensure unlock when function returns
 
-	// Start transaction
 	tx, err := sm.db.BeginTx(ctx, nil)
 	if err != nil {
 		sm.log.Error("Failed to begin transaction", "error", err)
@@ -715,7 +715,6 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 		}
 	}()
 
-	// Get the file ID from the file name
 	fileID, err := sm.GetFileIDByName(ctx, filename, withTx(tx))
 	if err != nil {
 		if err == ErrNotFound {
@@ -732,7 +731,6 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 		return nil // No active layer means no changes to checkpoint
 	}
 
-	// Insert version within transaction
 	insertVersionQ := `INSERT INTO versions (tag) VALUES ($1) RETURNING id;`
 	var versionID int64
 	err = tx.QueryRowContext(ctx, insertVersionQ, version).Scan(&versionID)
@@ -741,32 +739,22 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 		return fmt.Errorf("failed to insert new version: %w", err)
 	}
 
-	// Generate S3 object key
-	s3ObjectKey := fmt.Sprintf("layers/%s/%d-%d", filename, fileID, versionID)
+	objectKey := fmt.Sprintf("layers/%s/%d-%d", filename, fileID, versionID)
 
-	// Upload data to S3 using a reader to avoid loading all data into memory again
-	r := bytes.NewReader(activeLayer.data)
-	_, err = sm.s3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:            aws.String(sm.s3BucketName),
-		Key:               aws.String(s3ObjectKey),
-		Body:              r,
-		ChecksumAlgorithm: types.ChecksumAlgorithmCrc32,
-	})
+	err = sm.objectStore.PutObject(ctx, objectKey, activeLayer.data)
 	if err != nil {
-		sm.log.Error("Failed to upload data to S3", "error", err)
-		return fmt.Errorf("failed to upload data to S3: %w", err)
+		sm.log.Error("Failed to upload data to object store", "error", err)
+		return fmt.Errorf("failed to upload data to object store: %w", err)
 	}
 
-	// Store the layer metadata with S3 object key
 	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id, s3_object_key) VALUES ($1, $2, $3) RETURNING id;`
 	var layerID int64
-	err = tx.QueryRowContext(ctx, insertLayerQ, fileID, versionID, s3ObjectKey).Scan(&layerID)
+	err = tx.QueryRowContext(ctx, insertLayerQ, fileID, versionID, objectKey).Scan(&layerID)
 	if err != nil {
 		sm.log.Error("Failed to commit layer with version", "error", err)
 		return fmt.Errorf("failed to commit layer with version: %w", err)
 	}
 
-	// Insert the layer's chunks
 	for _, c := range activeLayer.chunks {
 		err = sm.insertChunk(ctx, layerID, c, withTx(tx))
 		if err != nil {
@@ -781,10 +769,9 @@ func (sm *Manager) Checkpoint(ctx context.Context, filename string, version stri
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Reset the active layer
 	delete(sm.memtable, fileID)
 
-	sm.log.Debug("Checkpoint successful", "layerID", layerID, "s3ObjectKey", s3ObjectKey)
+	sm.log.Debug("Checkpoint successful", "layerID", layerID, "objectKey", objectKey)
 
 	return nil
 }
@@ -848,49 +835,31 @@ func rangesOverlap(range1 [2]uint64, range2 [2]uint64) bool {
 	return range1[0] < range2[1] && range2[0] < range1[1]
 }
 
-// getChunkData retrieves chunk data from S3 using range requests
-func getChunkData(ctx context.Context, db *sql.DB, s3Client *s3.Client, bucketName string, c metadata) ([]byte, error) {
-	var s3ObjectKey string
+// getChunkData retrieves chunk data from the object store using range requests
+func getChunkData(ctx context.Context, db *sql.DB, objectStore ObjectStore, c metadata) ([]byte, error) {
+	var objectKey string
 
-	// Get the S3 object key from the snapshot_layers table
+	// Get the object key from the snapshot_layers table
 	err := db.QueryRowContext(ctx, `
 		SELECT s3_object_key
 		FROM snapshot_layers
 		WHERE id = $1
-	`, c.layerID).Scan(&s3ObjectKey)
+	`, c.layerID).Scan(&objectKey)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return []byte{}, nil
 		}
-		return nil, fmt.Errorf("error retrieving S3 object key: %w", err)
+		return nil, fmt.Errorf("error retrieving object key: %w", err)
 	}
 
-	// Calculate the expected size
-	expectedSize := c.layerRange[1] - c.layerRange[0]
-
-	// Calculate the range - using inclusive range format for HTTP Range header
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", c.layerRange[0], c.layerRange[1]-1)
-
-	// Get the object from S3 with range request
-	resp, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucketName),
-		Key:    aws.String(s3ObjectKey),
-		Range:  aws.String(rangeHeader),
-	})
+	layerSize := c.layerRange[1] - c.layerRange[0]
+	data, err := objectStore.GetObject(ctx, objectKey, [2]uint64{c.layerRange[0], c.layerRange[1] - 1})
 	if err != nil {
-		return nil, fmt.Errorf("error retrieving data from S3: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read the response body completely using io.ReadAll
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading data from S3 response: %w", err)
+		return nil, fmt.Errorf("error retrieving data from object store: %w", err)
 	}
 
-	// Validate we got exactly the number of bytes expected
-	if uint64(len(data)) != expectedSize {
-		return nil, fmt.Errorf("received incorrect number of bytes from S3: got %d, expected %d", len(data), expectedSize)
+	if uint64(len(data)) != layerSize {
+		return nil, fmt.Errorf("received incorrect number of bytes from object store: got %d, expected %d", len(data), layerSize)
 	}
 
 	return data, nil
