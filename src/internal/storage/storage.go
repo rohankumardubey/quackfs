@@ -339,6 +339,18 @@ func (mgr *Manager) InsertFile(ctx context.Context, name string) (int64, error) 
 	return fileID, nil
 }
 
+// calcSizeOf calculates the total byte size of the virtual file from all layers and their chunks, respecting layer creation order and handling overlapping file ranges.
+//
+// File offset →    0    5    10   15   20   25   30   35   40
+// Layer 3 (newest) ···╔═════╗···╔═══╗··························
+// Layer 2          ········╔══════════╗·······╔═══════════════╗
+// Layer 1 (oldest) ╔═══════════════════════════╗···············
+//
+//									                           ↑
+//		      							                       |
+//	              							         File size = 44
+//
+// File size is determined by the highest end offset across all chunks
 func (mgr *Manager) calcSizeOf(ctx context.Context, fileID int64, opts ...metadata.QueryOpt) (uint64, error) {
 	activeLayer, exists := mgr.memtable[fileID]
 	if exists && activeLayer != nil && len(activeLayer.Chunks) > 0 {
