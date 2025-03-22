@@ -2,13 +2,15 @@
 
 # QuackFS
 
-QuackFS is a FUSE-based filesystem that uses PostgreSQL and S3 as a backend for persistence. Its storage model is based on Differential Storage, meaning that it only stores the differences between versions of a file, resulting in storage efficiency and version history.
+![QuackFS Logo](./quackfs-logo.png)
+
+QuackFS is a FUSE-based filesystem that uses PostgreSQL and S3 as a backend for persistence. Its storage model is based on Differential Storage, meaning that it only stores the differences between write operations, which allows for time-travel, zero-copy sharing and efficient versioning.
 
 ## Purpose
 
 QuackFS is specialized for DuckDB database files and their associated Write-Ahead Log (WAL) files. It is not intended as a general-purpose filesystem.
 
-It was created for learning purposes and to explore the idea of Differential Storage. For more information see [this blog post](https://motherduck.com/blog/differential-storage-building-block-for-data-warehouse/) from MotherDuck.
+It was created for learning purposes and to explore the idea of Differential Storage. I was greatly inspired by [this blog post](https://motherduck.com/blog/differential-storage-building-block-for-data-warehouse/) from MotherDuck. 🦆
 
 > [!WARNING]
 > This project is not production-ready. It is a proof of concept and should not be used in production environments.
@@ -30,17 +32,18 @@ This project is currently in development. Some of planned features are:
 - [ ] Creating new databases from a specific point in time (sharing data with zero copy)
 - [ ] Merging of snapshot layers
 - [ ] Garbage collection of snapshot layers
+- [ ] Add proper database indexing
 - [ ] Fix -test.shuffle 1742466944778699921
 
 ## Getting Started
 
-This project is setup using devcontainers. To get started, you can use one of the following options:
+This project is setup using [Dev Containers](https://containers.dev/). To get started, you can use one of the following editors:
 
 - VSCode
 - Cursor
 - Github Codespaces (quite slow if you use the free plan)
 
-It should work with any other IDE that supports devcontainers, but I've only tested it with the above.
+Install the required extension first [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). It should work with any other IDE that supports Dev Containers, but I've only tested it with the above.
 
 ## Usage
 
