@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vinimdocarmo/quackfs/src/internal/quackfstest"
-	"github.com/vinimdocarmo/quackfs/src/internal/storage"
+	"github.com/vinimdocarmo/quackfs/internal/quackfstest"
+	"github.com/vinimdocarmo/quackfs/internal/storage"
 )
 
 func TestWriteReadActiveLayer(t *testing.T) {

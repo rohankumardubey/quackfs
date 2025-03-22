@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/lib/pq"
 
-	"github.com/vinimdocarmo/quackfs/src/internal/logger"
-	"github.com/vinimdocarmo/quackfs/src/internal/storage"
-	object "github.com/vinimdocarmo/quackfs/src/internal/storage/object"
+	"github.com/vinimdocarmo/quackfs/internal/logger"
+	"github.com/vinimdocarmo/quackfs/internal/storage"
+	object "github.com/vinimdocarmo/quackfs/internal/storage/object"
 )
 
 func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {

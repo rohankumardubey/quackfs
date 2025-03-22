@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
-	"github.com/vinimdocarmo/quackfs/src/internal/storage/metadata"
+	"github.com/vinimdocarmo/quackfs/internal/storage/metadata"
 )
 
 // Use ErrNotFound from metadata package

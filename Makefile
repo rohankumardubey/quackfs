@@ -7,10 +7,10 @@ PGPASSWORD ?= password
 export PGPASSWORD
 
 build:
-	GOEXPERIMENT=synctest go build -o quackfs.exe ./src/cmd/quackfs
+	GOEXPERIMENT=synctest go build -o quackfs.exe ./cmd/quackfs
 
 test: db.test.drop db.test.init localstack.test.init
-	S3_BUCKET_NAME=quackfs-bucket-test GOEXPERIMENT=synctest go test -failfast -timeout 5s -p 1 -race -shuffle=on -v ./src/... $(TEST)
+	S3_BUCKET_NAME=quackfs-bucket-test GOEXPERIMENT=synctest go test -failfast -timeout 5s -p 1 -race -shuffle=on -v ./... $(TEST)
 
 clean: db.drop
 	fusermount3 -u /tmp/fuse || true

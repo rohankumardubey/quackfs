@@ -10,8 +10,8 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/charmbracelet/log"
-	"github.com/vinimdocarmo/quackfs/src/internal/storage"
-	"github.com/vinimdocarmo/quackfs/src/internal/storage/wal"
+	"github.com/vinimdocarmo/quackfs/internal/storage"
+	"github.com/vinimdocarmo/quackfs/internal/storage/wal"
 )
 
 // FS implements the FUSE filesystem.
