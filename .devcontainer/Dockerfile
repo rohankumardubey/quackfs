@@ -5,11 +5,9 @@
 
 FROM ubuntu:focal
 
-COPY first-run-notice.txt /tmp/scripts/
-
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     # Restore man command
-    && yes | unminimize 2>&1 
+    && yes | unminimize 2>&1
 
 ENV LANG="C.UTF-8"
 
@@ -24,13 +22,10 @@ RUN apt-get update \
         # Required for PostgreSQL
         postgresql-contrib \
         postgresql \
-        # Required for ts
         moreutils \
-        rsync \
         zip \
         libgdiplus \
         jq \
-        #.NET Core related pre-requisites
         libc6 \
         libgcc1 \
         libgssapi-krb5-2 \
@@ -41,16 +36,9 @@ RUN apt-get update \
         zlib1g \
         libuuid1 \
         libunwind8 \
-        sqlite3 \
-        libsqlite3-dev \
         software-properties-common \
-        tk-dev \
-        uuid-dev \
         curl \
-        gettext \
-        inotify-tools \
     && rm -rf /var/lib/apt/lists/* \
-    # This is the folder containing 'links' to benv and build script generator
     && apt-get update \
     && apt-get upgrade -y \
     && add-apt-repository universe \
@@ -64,10 +52,7 @@ RUN apt-get update \
     # Install libs which is need for this project
     && apt-get install -y fuse3 python3-pip \
     # Clean up
-    && apt-get autoremove -y && apt-get clean -y \
-    # Move first run notice to right spot
-    && mkdir -p "/usr/local/etc/vscode-dev-containers/" \
-    && mv -f /tmp/scripts/first-run-notice.txt /usr/local/etc/vscode-dev-containers/
+    && apt-get autoremove -y && apt-get clean -y
 
 # Install DuckDB based on architecture
 RUN ARCH=$(arch) && \
@@ -90,10 +75,7 @@ RUN pip install awscli-local
 ENV SHELL=/bin/zsh \
     DOCKER_BUILDKIT=1
 
-# Remove scripts now that we're done with them
-RUN apt-get clean -y && rm -rf /tmp/scripts
-
-# Mount for docker-in-docker 
+# Mount for docker-in-docker
 VOLUME [ "/var/lib/docker" ]
 
 CMD [ "sleep", "infinity" ]

@@ -1,8 +1,10 @@
 {
+    "name": "QuackFS",
     "build": {
         "dockerfile": "./Dockerfile",
         "context": "."
     },
+    "runArgs": ["--name=quackfs"],
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {
             "username": "codespace",
@@ -24,13 +26,7 @@
         "ghcr.io/devcontainers/features/git-lfs:1": {
             "version": "latest"
         },
-        "ghcr.io/devcontainers/features/github-cli:1": {
-            "version": "latest"
-        },
         "ghcr.io/devcontainers/features/docker-in-docker:2": {
-            "version": "latest"
-        },
-        "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
             "version": "latest"
         },
         "ghcr.io/devcontainers/features/go:1.3.1": {
@@ -46,9 +42,7 @@
         "./local-features/nvs",
         "ghcr.io/devcontainers/features/sshd",
         "ghcr.io/devcontainers/features/git-lfs",
-        "ghcr.io/devcontainers/features/github-cli",
         "ghcr.io/devcontainers/features/docker-in-docker",
-        "ghcr.io/devcontainers/features/kubectl-helm-minikube",
         "ghcr.io/devcontainers/features/go",
         "ghcr.io/devcontainers/features/oryx",
         "./local-features/setup-user"
@@ -70,7 +64,7 @@
     "postStartCommand": "sudo chmod +x ${containerWorkspaceFolder}/.devcontainer/postgresql-init.sh && sudo ${containerWorkspaceFolder}/.devcontainer/postgresql-init.sh",
 
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
-    "forwardPorts": [5432],
+    "forwardPorts": [],
 
     // Configure tool-specific properties.
     "customizations": {
@@ -84,10 +78,7 @@
                 "lldb.executable": "/usr/bin/lldb"
             },
             // Add the IDs of extensions you want installed when the container is created.
-            "extensions": [
-                "GitHub.vscode-pull-request-github",
-                "ckolkman.vscode-postgres"
-            ]
+            "extensions": []
         }
     }
 }

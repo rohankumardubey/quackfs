@@ -37,7 +37,9 @@ This project is currently in development. Some of planned features are:
 
 ## Getting Started
 
-This project is setup using [Dev Containers](https://containers.dev/). To get started, you can use one of the following editors:
+This project is setup using [Dev Containers](https://containers.dev/). The only dependency you need installed locally is Docker.
+
+To get started, you can use one of the following editors:
 
 - VSCode
 - Cursor
@@ -46,6 +48,8 @@ This project is setup using [Dev Containers](https://containers.dev/). To get st
 Install the required extension first [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). It should work with any other IDE that supports Dev Containers, but I've only tested it with the above.
 
 ## Usage
+
+All the commands listed below should be run inside the created Docker container. If you're using VSCode, you can open the integrated terminal and it will be running inside the container already. Or else, you can run `docker exec -it -w /workspaces/quackfs quackfs zsh` on your favorite terminal and follow from there.
 
 To run the storage backend, you can use the following command:
 

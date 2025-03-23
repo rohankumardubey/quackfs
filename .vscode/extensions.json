@@ -1,7 +1,5 @@
 {
     "recommendations": [
-        "golang.go",
-        "github.vscode-github-actions",
-        "sanjulaganepola.github-local-actions"
+        "golang.go"
     ]
 }
