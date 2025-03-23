@@ -10,30 +10,10 @@ QuackFS is a FUSE-based filesystem that uses PostgreSQL and S3 as a backend for 
 
 QuackFS is specialized for DuckDB database files and their associated Write-Ahead Log (WAL) files. It is not intended as a general-purpose filesystem. Checkout the [architecture diagram](./architecture-diagram.jpg) for more details.
 
-It was created for learning purposes and to explore the idea of Differential Storage. I was greatly inspired by [this blog post](https://motherduck.com/blog/differential-storage-building-block-for-data-warehouse/) from MotherDuck. 🦆
+This project was created for learning purposes and to explore the idea of Differential Storage. It was greatly inspired by [this blog post](https://motherduck.com/blog/differential-storage-building-block-for-data-warehouse/) by MotherDuck 🦆. Do check it out to have a better understanding of what I've implemented here.
 
 > [!WARNING]
 > This project is not production-ready. It is a proof of concept and should not be used in production environments.
-
-## Features
-
-- PostgreSQL for reliable metadata persistence
-- S3 for data storage
-- Differential storage for efficient version handling
-- FUSE integration for seamless OS interaction
-
-## Status
-
-This project is currently in development. Some of planned features are:
-
-- [x] Use PostgreSQL for metadata and data persistence
-- [x] Use S3 for data storage instead of Postgres
-- [ ] Time travel: be able to query the database from old versions
-- [ ] Creating new databases from a specific point in time (sharing data with zero copy)
-- [ ] Merging of snapshot layers
-- [ ] Garbage collection of snapshot layers
-- [ ] Add proper database indexing
-- [ ] Fix -test.shuffle 1742466944778699921
 
 ## Getting Started
 
@@ -78,3 +58,16 @@ $ make test
 ```
 
 For other commands, check the Makefile.
+
+## Status
+
+This project is currently in development. Some of planned features are:
+
+- [x] Use PostgreSQL for metadata and data persistence
+- [x] Use S3 for data storage instead of Postgres
+- [ ] Time travel: be able to query the database from old versions
+- [ ] Creating new databases from a specific point in time (sharing data with zero copy)
+- [ ] Merging of snapshot layers
+- [ ] Garbage collection of snapshot layers
+- [ ] Add proper database indexing
+- [ ] Fix -test.shuffle 1742466944778699921
