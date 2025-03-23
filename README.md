@@ -8,7 +8,7 @@ QuackFS is a FUSE-based filesystem that uses PostgreSQL and S3 as a backend for 
 
 ## Purpose
 
-QuackFS is specialized for DuckDB database files and their associated Write-Ahead Log (WAL) files. It is not intended as a general-purpose filesystem.
+QuackFS is specialized for DuckDB database files and their associated Write-Ahead Log (WAL) files. It is not intended as a general-purpose filesystem. Checkout the [architecture diagram](./architecture-diagram.jpg) for more details.
 
 It was created for learning purposes and to explore the idea of Differential Storage. I was greatly inspired by [this blog post](https://motherduck.com/blog/differential-storage-building-block-for-data-warehouse/) from MotherDuck. 🦆
 
@@ -37,24 +37,26 @@ This project is currently in development. Some of planned features are:
 
 ## Getting Started
 
-This project is setup using [Dev Containers](https://containers.dev/). The only dependency you need installed locally is Docker.
+### Prerequisites
 
-To get started, you can use one of the following editors:
+- Docker
+- VSCode, Cursor or Github Codespaces 
+    - Install [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 
-- VSCode
-- Cursor
-- Github Codespaces (quite slow if you use the free plan)
+It should work with any other IDE that supports Dev Containers, but I've only tested it with the above.
 
-Install the required extension first [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). It should work with any other IDE that supports Dev Containers, but I've only tested it with the above.
+### Setup the project
+
+After opening the project in your IDE and having installed the Dev Containers extension, you can open the command palette (`Ctrl+Shift+P` or `Cmd+Shift+P`) and search and select `Dev Containers: Reopen in Container`. This will start the container, which can take a couple minutes to build.
 
 ## Usage
 
-All the commands listed below should be run inside the created Docker container. If you're using VSCode, you can open the integrated terminal and it will be running inside the container already. Or else, you can run `docker exec -it -w /workspaces/quackfs quackfs zsh` on your favorite terminal and follow from there.
+All the commands listed below should be run inside the container that was created in the previous step. If you're using VSCode, you can open the integrated terminal and it will be running inside the container already. Alternatively, you can run `docker exec -it -w /workspaces/quackfs quackfs zsh` on your favorite terminal and follow from there.
 
-To run the storage backend, you can use the following command:
+To run the QuackFS process (storage backend), you can use the following command:
 
 ```bash
-$ make
+$ make run
 ```
 
 In another terminal you can run DuckDB CLI to open/create a database in the FUSE mountpoint (default is `/tmp/fuse`):
@@ -63,13 +65,13 @@ In another terminal you can run DuckDB CLI to open/create a database in the FUSE
 $ duckdb /tmp/fuse/db.duckdb
 ```
 
-Alternatively, you can run our "load" test script (make sure the storage backend is running), because this script will run against the Differential Storage implementation
+Alternatively, you can run our "load" test script (make sure `make run` is running in another terminal), because this script will run against the Differential Storage implementation:
 
 ```bash
 $ make load
 ```
 
-To run all the tests, you can use the following command:
+To run all the tests, run following command:
 
 ```bash
 $ make test
