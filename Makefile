@@ -10,7 +10,8 @@ build:
 	GOEXPERIMENT=synctest go build -o quackfs.exe ./cmd/quackfs
 
 test: db.test.drop db.test.init localstack.test.init
-	S3_BUCKET_NAME=quackfs-bucket-test GOEXPERIMENT=synctest go test -failfast -timeout 5s -p 1 -race ./... $(TEST)
+	# Using -test.shuffle to get a deterministic order of tests for now
+	S3_BUCKET_NAME=quackfs-bucket-test GOEXPERIMENT=synctest go test -failfast -timeout 5s -p 1 -race -shuffle on -v ./... $(TEST)
 
 clean: db.drop
 	fusermount3 -u /tmp/fuse || true
@@ -29,7 +30,7 @@ db.init:
 		echo "Database quackfs already exists"; \
 	fi
 
-	@psql -h localhost -p 5432 -U postgres -d quackfs -f schema.sql;
+	@psql -h localhost -p 5432 -U postgres -d quackfs -f ./db/schema.sql;
 
 db.test.init:
 	@echo "Setting up PostgreSQL test database if not already running"
@@ -43,7 +44,7 @@ db.test.init:
 		echo "Database quackfs_test already exists"; \
 	fi
 
-	@psql -h localhost -p 5432 -U postgres -d quackfs_test -f schema.sql;
+	@psql -h localhost -p 5432 -U postgres -d quackfs_test -f ./db/schema.sql;
 
 db.drop:
 	@echo "Cleaning PostgreSQL database"
@@ -106,3 +107,6 @@ localstack.drop:
 		echo "Removing LocalStack container..."; \
 		docker rm --force localstack || true; \
 	fi
+
+install:
+	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest

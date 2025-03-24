@@ -7,19 +7,16 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/vinimdocarmo/quackfs/db/sqlc"
+	"github.com/vinimdocarmo/quackfs/db/types"
 )
 
 var ErrNotFound = errors.New("not found")
 
-// FileInfo represents basic file information
-type FileInfo struct {
-	ID   int
-	Name string
-}
-
 // Chunk holds information about where data was written in the layer data
 type Chunk struct {
-	LayerID    int64     // 0 if flushed is false
+	LayerID    uint64    // 0 if flushed is false
 	Flushed    bool      // whether the chunk metadata has been persisted to the database
 	LayerRange [2]uint64 // Range within a layer as an array of two integers
 	FileRange  [2]uint64 // Range within the virtual file as an array of two integers
@@ -39,10 +36,10 @@ type Chunk struct {
 // are stored in the chunks metadata. Which write will be represented by a
 // chunkMetadata.
 type Layer struct {
-	ID        int64
-	FileID    int64
+	ID        uint64
+	FileID    uint64
 	Active    bool // whether or not it is the current active layer (memory resident)
-	VersionID int64
+	VersionID uint64
 	Tag       string
 	Chunks    []Chunk
 	Size      uint64
@@ -51,12 +48,12 @@ type Layer struct {
 }
 
 type MetadataStore struct {
-	db *sql.DB
+	queries *sqlc.Queries
 }
 
 func NewMetadataStore(db *sql.DB) *MetadataStore {
 	return &MetadataStore{
-		db: db,
+		queries: sqlc.New(db),
 	}
 }
 
@@ -72,22 +69,22 @@ func WithTx(tx *sql.Tx) QueryOpt {
 	}
 }
 
-func (ms *MetadataStore) GetFileIDByName(ctx context.Context, name string, opts ...QueryOpt) (int64, error) {
-	query := `SELECT id FROM files WHERE name = $1;`
-	var fileID int64
-
+func (ms *MetadataStore) GetFileIDByName(ctx context.Context, name string, opts ...QueryOpt) (uint64, error) {
 	options := QueryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
+	var fileID uint64
 	var err error
 
+	queries := ms.queries
+
 	if options.tx != nil {
-		err = options.tx.QueryRowContext(ctx, query, name).Scan(&fileID)
-	} else {
-		err = ms.db.QueryRowContext(ctx, query, name).Scan(&fileID)
+		queries = ms.queries.WithTx(options.tx)
 	}
+
+	fileID, err = queries.GetFileIDByName(ctx, name)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -99,10 +96,8 @@ func (ms *MetadataStore) GetFileIDByName(ctx context.Context, name string, opts 
 	return fileID, nil
 }
 
-func (ms *MetadataStore) InsertFile(ctx context.Context, name string) (int64, error) {
-	query := `INSERT INTO files (name) VALUES ($1) RETURNING id;`
-	var fileID int64
-	err := ms.db.QueryRowContext(ctx, query, name).Scan(&fileID)
+func (ms *MetadataStore) InsertFile(ctx context.Context, name string) (uint64, error) {
+	fileID, err := ms.queries.InsertFile(ctx, name)
 	if err != nil {
 		return 0, err
 	}
@@ -110,53 +105,27 @@ func (ms *MetadataStore) InsertFile(ctx context.Context, name string) (int64, er
 	return fileID, nil
 }
 
-func (ms *MetadataStore) GetAllFiles(ctx context.Context) ([]FileInfo, error) {
-	query := `SELECT id, name FROM files;`
-	rows, err := ms.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var files []FileInfo
-	for rows.Next() {
-		var file FileInfo
-		if err := rows.Scan(&file.ID, &file.Name); err != nil {
-			return nil, err
-		}
-		files = append(files, file)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return files, nil
+func (ms *MetadataStore) GetAllFiles(ctx context.Context) ([]sqlc.File, error) {
+	return ms.queries.GetAllFiles(ctx)
 }
 
 // CalcSizeOf calculates the total byte size of the DuckDB database file
-func (ms *MetadataStore) CalcSizeOf(ctx context.Context, fileID int64, opts ...QueryOpt) (uint64, error) {
-	query := `
-		SELECT upper(e.file_range)
-		FROM chunks e
-			INNER JOIN snapshot_layers l ON e.snapshot_layer_id = l.id
-		WHERE l.file_id = $1
-		ORDER BY upper(e.file_range) DESC
-		LIMIT 1;
-	`
-	var highestOffset uint64
-
+func (ms *MetadataStore) CalcSizeOf(ctx context.Context, fileID uint64, opts ...QueryOpt) (uint64, error) {
 	options := QueryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
+	var fileSize int64
 	var err error
+
+	queries := ms.queries
+
 	if options.tx != nil {
-		err = options.tx.QueryRowContext(ctx, query, fileID).Scan(&highestOffset)
-	} else {
-		err = ms.db.QueryRowContext(ctx, query, fileID).Scan(&highestOffset)
+		queries = ms.queries.WithTx(options.tx)
 	}
+
+	fileSize, err = queries.CalcFileSize(ctx, fileID)
 
 	if err != nil {
 		// If the file has no chunks, its size is 0
@@ -166,28 +135,33 @@ func (ms *MetadataStore) CalcSizeOf(ctx context.Context, fileID int64, opts ...Q
 		return 0, err
 	}
 
-	return highestOffset, nil
+	return uint64(fileSize), nil
 }
 
-func (ms *MetadataStore) InsertChunk(ctx context.Context, layerID int64, c Chunk, opts ...QueryOpt) error {
-	layerRangeStr := fmt.Sprintf("[%d,%d)", c.LayerRange[0], c.LayerRange[1])
-	fileRangeStr := fmt.Sprintf("[%d,%d)", c.FileRange[0], c.FileRange[1])
-
-	query := `INSERT INTO chunks (snapshot_layer_id, layer_range, file_range) 
-	         VALUES ($1, $2, $3);`
-
+func (ms *MetadataStore) InsertChunk(ctx context.Context, layerID uint64, c Chunk, opts ...QueryOpt) error {
 	options := QueryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
 	var err error
-	if options.tx != nil {
-		_, err = options.tx.ExecContext(ctx, query, layerID, layerRangeStr, fileRangeStr)
-	} else {
-		_, err = ms.db.ExecContext(ctx, query, layerID, layerRangeStr, fileRangeStr)
+
+	layerRange := types.Range(c.LayerRange)
+	fileRange := types.Range(c.FileRange)
+
+	params := sqlc.InsertChunkParams{
+		SnapshotLayerID: layerID,
+		LayerRange:      layerRange,
+		FileRange:       fileRange,
 	}
 
+	queries := ms.queries
+
+	if options.tx != nil {
+		queries = ms.queries.WithTx(options.tx)
+	}
+
+	err = queries.InsertChunk(ctx, params)
 	if err != nil {
 		return fmt.Errorf("failed to insert chunk: %w", err)
 	}
@@ -195,90 +169,71 @@ func (ms *MetadataStore) InsertChunk(ctx context.Context, layerID int64, c Chunk
 	return nil
 }
 
-func (ms *MetadataStore) LoadLayersByFileID(ctx context.Context, fileID int64, opts ...QueryOpt) ([]*Layer, error) {
-	query := `
-		SELECT snapshot_layers.id, file_id, version_id, tag, object_key
-		FROM snapshot_layers
-		LEFT JOIN versions ON snapshot_layers.version_id = versions.id
-		WHERE file_id = $1 ORDER BY id ASC;
-	`
-
+func (ms *MetadataStore) LoadLayersByFileID(ctx context.Context, fileID uint64, opts ...QueryOpt) ([]*Layer, error) {
 	options := QueryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	var rows *sql.Rows
+	var rows []sqlc.GetLayersByFileIDRow
 	var err error
 
+	queries := ms.queries
+
 	if options.tx != nil {
-		rows, err = options.tx.QueryContext(ctx, query, fileID)
-	} else {
-		rows, err = ms.db.QueryContext(ctx, query, fileID)
+		queries = ms.queries.WithTx(options.tx)
 	}
 
+	rows, err = queries.GetLayersByFileID(ctx, fileID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var layers []*Layer
 
-	for rows.Next() {
-		var id int64
-		var versionID sql.NullInt64
-		var tag sql.NullString
-		var objectKey sql.NullString
-		if err := rows.Scan(&id, &fileID, &versionID, &tag, &objectKey); err != nil {
-			return nil, err
-		}
-
-		layer := &Layer{FileID: fileID}
-		layer.ID = id
-		if versionID.Valid {
-			layer.VersionID = versionID.Int64
+	for _, row := range rows {
+		layer := &Layer{FileID: row.FileID}
+		layer.ID = row.ID
+		if row.VersionID.Valid {
+			layer.VersionID = uint64(row.VersionID.Int64)
 		} else {
 			layer.VersionID = 0
 		}
-		if tag.Valid {
-			layer.Tag = tag.String
+		if row.Tag.Valid {
+			layer.Tag = row.Tag.String
 		}
-		if objectKey.Valid {
-			layer.ObjectKey = objectKey.String
-		}
+		layer.ObjectKey = row.ObjectKey
 		layers = append(layers, layer)
 	}
 
 	return layers, nil
 }
 
-func (ms *MetadataStore) InsertVersion(ctx context.Context, tx *sql.Tx, version string) (int64, error) {
-	insertVersionQ := `INSERT INTO versions (tag) VALUES ($1) RETURNING id;`
-	var versionID int64
-	err := tx.QueryRowContext(ctx, insertVersionQ, version).Scan(&versionID)
+func (ms *MetadataStore) InsertVersion(ctx context.Context, tx *sql.Tx, version string) (uint64, error) {
+	queries := ms.queries.WithTx(tx)
+	versionID, err := queries.InsertVersion(ctx, version)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert new version: %w", err)
 	}
 	return versionID, nil
 }
 
-func (ms *MetadataStore) InsertLayer(ctx context.Context, tx *sql.Tx, fileID int64, versionID int64, objectKey string) (int64, error) {
-	insertLayerQ := `INSERT INTO snapshot_layers (file_id, version_id, object_key) VALUES ($1, $2, $3) RETURNING id;`
-	var layerID int64
-	err := tx.QueryRowContext(ctx, insertLayerQ, fileID, versionID, objectKey).Scan(&layerID)
+func (ms *MetadataStore) InsertLayer(ctx context.Context, tx *sql.Tx, fileID uint64, versionID uint64, objectKey string) (uint64, error) {
+	params := sqlc.InsertLayerParams{
+		FileID:    fileID,
+		VersionID: sql.NullInt64{Int64: int64(versionID), Valid: true},
+		ObjectKey: objectKey,
+	}
+
+	layerID, err := ms.queries.WithTx(tx).InsertLayer(ctx, params)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert layer: %w", err)
 	}
 	return layerID, nil
 }
 
-func (ms *MetadataStore) GetObjectKey(ctx context.Context, layerID int64) (string, error) {
-	var objectKey string
-	err := ms.db.QueryRowContext(ctx, `
-		SELECT object_key
-		FROM snapshot_layers
-		WHERE id = $1
-	`, layerID).Scan(&objectKey)
+func (ms *MetadataStore) GetObjectKey(ctx context.Context, layerID uint64) (string, error) {
+	objectKey, err := ms.queries.GetObjectKey(ctx, layerID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
@@ -288,27 +243,13 @@ func (ms *MetadataStore) GetObjectKey(ctx context.Context, layerID int64) (strin
 	return objectKey, nil
 }
 
-func (ms *MetadataStore) GetLayerByVersion(ctx context.Context, fileID int64, versionTag string, tx *sql.Tx) (*Layer, error) {
-	query := `
-		SELECT snapshot_layers.id, snapshot_layers.file_id, snapshot_layers.version_id, 
-			   versions.tag, snapshot_layers.object_key
-		FROM snapshot_layers
-		INNER JOIN versions ON versions.id = snapshot_layers.version_id
-		WHERE snapshot_layers.file_id = $1 AND versions.tag = $2
-	`
+func (ms *MetadataStore) GetLayerByVersion(ctx context.Context, fileID uint64, versionTag string, tx *sql.Tx) (*Layer, error) {
+	params := sqlc.GetLayerByVersionParams{
+		FileID: fileID,
+		Tag:    versionTag,
+	}
 
-	var layer Layer
-	var versionID sql.NullInt64
-	var tag sql.NullString
-	var objectKey sql.NullString
-
-	err := tx.QueryRowContext(ctx, query, fileID, versionTag).Scan(
-		&layer.ID,
-		&layer.FileID,
-		&versionID,
-		&tag,
-		&objectKey,
-	)
+	row, err := ms.queries.WithTx(tx).GetLayerByVersion(ctx, params)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -317,16 +258,17 @@ func (ms *MetadataStore) GetLayerByVersion(ctx context.Context, fileID int64, ve
 		return nil, fmt.Errorf("failed to fetch layer: %w", err)
 	}
 
+	layer := &Layer{
+		ID:     row.ID,
+		FileID: row.FileID,
+	}
+
 	// Set optional fields
-	if versionID.Valid {
-		layer.VersionID = versionID.Int64
+	if row.VersionID.Valid {
+		layer.VersionID = uint64(row.VersionID.Int64)
 	}
-	if tag.Valid {
-		layer.Tag = tag.String
-	}
-	if objectKey.Valid {
-		layer.ObjectKey = objectKey.String
-	}
+	layer.Tag = row.Tag
+	layer.ObjectKey = row.ObjectKey
 
 	// Load the chunk metadata for this layer
 	chunks, err := ms.GetLayerChunks(ctx, layer.ID)
@@ -335,7 +277,7 @@ func (ms *MetadataStore) GetLayerByVersion(ctx context.Context, fileID int64, ve
 	}
 	layer.Chunks = chunks
 
-	return &layer, nil
+	return layer, nil
 }
 
 // ParseRange parses strings of the form "[start, end)" into two uint64 values
@@ -363,58 +305,27 @@ func RangesOverlap(range1 [2]uint64, range2 [2]uint64) bool {
 	return range1[0] < range2[1] && range2[0] < range1[1]
 }
 
-func (ms *MetadataStore) GetLayerChunks(ctx context.Context, layerID int64) ([]Chunk, error) {
-	query := `
-		SELECT layer_range, file_range
-		FROM chunks
-		WHERE snapshot_layer_id = $1
-		ORDER BY id ASC;
-	`
+// Helper function to convert chunk row data into a Chunk struct
+func toChunk(layerID uint64, layerRange types.Range, fileRange types.Range, flushed bool) Chunk {
+	return Chunk{
+		LayerID:    layerID,
+		Flushed:    flushed,
+		LayerRange: [2]uint64(layerRange),
+		FileRange:  [2]uint64(fileRange),
+	}
+}
 
-	rows, err := ms.db.QueryContext(ctx, query, layerID)
+func (ms *MetadataStore) GetLayerChunks(ctx context.Context, layerID uint64) ([]Chunk, error) {
+	rows, err := ms.queries.GetLayerChunks(ctx, layerID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var chunks []Chunk
 
-	for rows.Next() {
-		var layerRangeStr, fileRangeStr sql.NullString
-		if err := rows.Scan(&layerRangeStr, &fileRangeStr); err != nil {
-			return nil, err
-		}
-
-		layerRange := [2]uint64{0, 0}
-		if layerRangeStr.Valid {
-			start, end, err := ParseRange(layerRangeStr.String)
-			if err != nil {
-				return nil, err
-			}
-			layerRange[0] = start
-			layerRange[1] = end
-		} else {
-			return nil, fmt.Errorf("invalid layer range")
-		}
-
-		fileRange := [2]uint64{0, 0}
-		if fileRangeStr.Valid {
-			start, end, err := ParseRange(fileRangeStr.String)
-			if err != nil {
-				return nil, err
-			}
-			fileRange[0] = start
-			fileRange[1] = end
-		} else {
-			return nil, fmt.Errorf("invalid file range")
-		}
-
-		chunks = append(chunks, Chunk{
-			LayerID:    layerID,
-			Flushed:    true,
-			LayerRange: layerRange,
-			FileRange:  fileRange,
-		})
+	for _, row := range rows {
+		chunk := toChunk(layerID, row.LayerRange, row.FileRange, true)
+		chunks = append(chunks, chunk)
 	}
 
 	return chunks, nil
@@ -423,113 +334,53 @@ func (ms *MetadataStore) GetLayerChunks(ctx context.Context, layerID int64) ([]C
 type ChunkQueryOpt func(*ChunkQueryOpts)
 
 type ChunkQueryOpts struct {
-	versionedLayerID int64
+	versionedLayerID uint64
 }
 
 // WithVersionedLayerID specifies a versioned layer ID to filter chunks by
 // if 0 the value is ignored
-func WithVersionedLayerID(id int64) ChunkQueryOpt {
+func WithVersionedLayerID(id uint64) ChunkQueryOpt {
 	return func(opts *ChunkQueryOpts) {
 		opts.versionedLayerID = id
 	}
 }
 
-// GetOverlappingChunks retrieves chunks that overlap with a specific range for a file
-func (ms *MetadataStore) GetOverlappingChunks(ctx context.Context, tx *sql.Tx, fileID int64, offsetRange [2]uint64, opts ...ChunkQueryOpt) ([]Chunk, error) {
+// getOverlappingChunks retrieves chunks that overlap with a specific range for a file
+func (ms *MetadataStore) getOverlappingChunks(ctx context.Context, tx *sql.Tx, fileID uint64, offsetRange [2]uint64, opts ...ChunkQueryOpt) ([]Chunk, error) {
 	options := ChunkQueryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	var query string
-	var rows *sql.Rows
-	var err error
-
-	if options.versionedLayerID > 0 {
-		query = `
-			SELECT c.snapshot_layer_id, c.layer_range, c.file_range
-			FROM chunks c
-			INNER JOIN snapshot_layers l ON c.snapshot_layer_id = l.id
-			WHERE
-				l.id <= $1 AND l.file_id = $2 AND
-				c.file_range && int8range($3, $4)
-			ORDER BY l.id ASC, c.id ASC;
-		`
-		rows, err = tx.QueryContext(ctx, query, options.versionedLayerID, fileID, offsetRange[0], offsetRange[1])
-	} else {
-		query = `
-			SELECT c.snapshot_layer_id, c.layer_range, c.file_range
-			FROM chunks c
-			INNER JOIN snapshot_layers l ON c.snapshot_layer_id = l.id
-			WHERE
-				l.file_id = $1 AND c.file_range && int8range($2, $3)
-			ORDER BY l.id ASC, c.id ASC;
-		`
-		rows, err = tx.QueryContext(ctx, query, fileID, offsetRange[0], offsetRange[1])
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query chunks: %w", err)
-	}
-	defer rows.Close()
+	queries := ms.queries.WithTx(tx)
 
 	var chunks []Chunk
 
-	for rows.Next() {
-		var layerID int64
-		var layerRangeStr, fileRangeStr sql.NullString
-
-		if err := rows.Scan(&layerID, &layerRangeStr, &fileRangeStr); err != nil {
-			return nil, fmt.Errorf("error scanning chunk row: %w", err)
-		}
-
-		layerRange := [2]uint64{0, 0}
-		if layerRangeStr.Valid {
-			start, end, err := ParseRange(layerRangeStr.String)
-			if err != nil {
-				return nil, err
-			}
-			layerRange[0] = start
-			layerRange[1] = end
-		} else {
-			return nil, fmt.Errorf("invalid layer range")
-		}
-
-		fileRange := [2]uint64{0, 0}
-		if fileRangeStr.Valid {
-			start, end, err := ParseRange(fileRangeStr.String)
-			if err != nil {
-				return nil, err
-			}
-			fileRange[0] = start
-			fileRange[1] = end
-		} else {
-			return nil, fmt.Errorf("invalid file range")
-		}
-
-		chunk := Chunk{
-			LayerID:    layerID,
-			Flushed:    true,
-			LayerRange: layerRange,
-			FileRange:  fileRange,
-		}
-		chunks = append(chunks, chunk)
+	params := sqlc.GetOverlappingChunksWithVersionParams{
+		VersionedLayerID: options.versionedLayerID,
+		FileID:           fileID,
+		Range:            types.Range(offsetRange),
+	}
+	rows, err := queries.GetOverlappingChunksWithVersion(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query chunks with version: %w", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating chunk rows: %w", err)
+	for _, row := range rows {
+		chunk := toChunk(row.SnapshotLayerID, row.LayerRange, row.FileRange, true)
+		chunks = append(chunks, chunk)
 	}
 
 	return chunks, nil
 }
 
-func (ms *MetadataStore) GetAllOverlappingChunks(ctx context.Context, tx *sql.Tx, fileID int64, offsetRange [2]uint64, activeLayer *Layer, opts ...ChunkQueryOpt) ([]Chunk, error) {
+func (ms *MetadataStore) GetAllOverlappingChunks(ctx context.Context, tx *sql.Tx, fileID uint64, offsetRange [2]uint64, activeLayer *Layer, opts ...ChunkQueryOpt) ([]Chunk, error) {
 	options := ChunkQueryOpts{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	chunks, err := ms.GetOverlappingChunks(ctx, tx, fileID, offsetRange, opts...)
+	chunks, err := ms.getOverlappingChunks(ctx, tx, fileID, offsetRange, opts...)
 	if err != nil {
 		return nil, err
 	}

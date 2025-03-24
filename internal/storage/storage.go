@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
+	"github.com/vinimdocarmo/quackfs/db/sqlc"
 	"github.com/vinimdocarmo/quackfs/internal/storage/metadata"
 )
 
@@ -24,8 +25,8 @@ type objectStore interface {
 type Manager struct {
 	db          *sql.DB
 	log         *log.Logger
-	mu          sync.RWMutex              // Add a mutex to protect memtable
-	memtable    map[int64]*metadata.Layer // Stores a mapping of file ids to their active layer
+	mu          sync.RWMutex               // Add a mutex to protect memtable
+	memtable    map[uint64]*metadata.Layer // Stores a mapping of file ids to their active layer
 	objectStore objectStore
 	metaStore   *metadata.MetadataStore
 }
@@ -38,7 +39,7 @@ func NewManager(db *sql.DB, store objectStore, log *log.Logger) *Manager {
 	sm := &Manager{
 		db:          db,
 		log:         managerLog,
-		memtable:    make(map[int64]*metadata.Layer),
+		memtable:    make(map[uint64]*metadata.Layer),
 		objectStore: store,
 		metaStore:   metadata.NewMetadataStore(db),
 	}
@@ -120,7 +121,7 @@ func (mgr *Manager) WriteFile(ctx context.Context, filename string, data []byte,
 	return nil
 }
 
-func (mgr *Manager) GetActiveLayerSize(ctx context.Context, fileID int64) uint64 {
+func (mgr *Manager) GetActiveLayerSize(ctx context.Context, fileID uint64) uint64 {
 	mgr.mu.RLock() // Read lock is sufficient for reading
 	defer mgr.mu.RUnlock()
 
@@ -131,7 +132,7 @@ func (mgr *Manager) GetActiveLayerSize(ctx context.Context, fileID int64) uint64
 	return activeLayer.Size
 }
 
-func (mgr *Manager) GetActiveLayerData(ctx context.Context, fileID int64) []byte {
+func (mgr *Manager) GetActiveLayerData(ctx context.Context, fileID uint64) []byte {
 	mgr.mu.RLock() // Read lock is sufficient for reading
 	defer mgr.mu.RUnlock()
 
@@ -180,7 +181,7 @@ func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64
 	}
 
 	hasVersion := options.version != ""
-	var versionedLayerId int64
+	var versionedLayerId uint64
 
 	if hasVersion {
 		mgr.log.Debug("reading file",
@@ -326,7 +327,7 @@ func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64
 }
 
 // InsertFile inserts a new file into the files table and returns its ID.
-func (mgr *Manager) InsertFile(ctx context.Context, name string) (int64, error) {
+func (mgr *Manager) InsertFile(ctx context.Context, name string) (uint64, error) {
 	mgr.log.Debug("Inserting new file into metadata store", "name", name)
 
 	fileID, err := mgr.metaStore.InsertFile(ctx, name)
@@ -351,7 +352,7 @@ func (mgr *Manager) InsertFile(ctx context.Context, name string) (int64, error) 
 //	              							         File size = 44
 //
 // File size is determined by the highest end offset across all chunks
-func (mgr *Manager) calcSizeOf(ctx context.Context, fileID int64, opts ...metadata.QueryOpt) (uint64, error) {
+func (mgr *Manager) calcSizeOf(ctx context.Context, fileID uint64, opts ...metadata.QueryOpt) (uint64, error) {
 	activeLayer, exists := mgr.memtable[fileID]
 	if exists && activeLayer != nil && len(activeLayer.Chunks) > 0 {
 		endOffset := uint64(0)
@@ -464,12 +465,12 @@ func (mgr *Manager) Checkpoint(ctx context.Context, filename string, version str
 }
 
 // GetAllFiles returns a list of all files in the database
-func (mgr *Manager) GetAllFiles(ctx context.Context) ([]metadata.FileInfo, error) {
+func (mgr *Manager) GetAllFiles(ctx context.Context) ([]sqlc.File, error) {
 	return mgr.metaStore.GetAllFiles(ctx)
 }
 
 // LoadLayersByFileID delegates to the metadata store
-func (mgr *Manager) LoadLayersByFileID(ctx context.Context, fileID int64, opts ...metadata.QueryOpt) ([]*metadata.Layer, error) {
+func (mgr *Manager) LoadLayersByFileID(ctx context.Context, fileID uint64, opts ...metadata.QueryOpt) ([]*metadata.Layer, error) {
 	return mgr.metaStore.LoadLayersByFileID(ctx, fileID, opts...)
 }
 

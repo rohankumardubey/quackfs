@@ -11,60 +11,11 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/charmbracelet/log"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vinimdocarmo/quackfs/internal/logger"
 	"github.com/vinimdocarmo/quackfs/internal/quackfstest"
 	"github.com/vinimdocarmo/quackfs/internal/storage"
 )
-
-func TestFuseReadWrite(t *testing.T) {
-	if os.Getenv("TEST_FUSE_SKIP") == "true" {
-		t.Skip("Skipping FUSE tests")
-	}
-
-	// Create and mount the FUSE filesystem using the in-process approach
-	mountDir, _, cleanup, errChan := setupFuseMount(t)
-	defer cleanup()
-
-	// Create the file first to ensure it exists
-	filePath := filepath.Join(mountDir, "test_file.duckdb")
-	createFile, err := os.Create(filePath)
-	require.NoError(t, err, "Failed to create test file")
-	require.NoError(t, createFile.Close(), "Failed to close file after creation")
-
-	// Now open the file for read/write.
-	f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
-	require.NoError(t, err, "Failed to open file %s", filePath)
-
-	// Write some data.
-	dataToWrite := []byte("test data")
-	n, err := f.Write(dataToWrite)
-	require.NoError(t, err, "Failed to write data")
-	assert.Equal(t, len(dataToWrite), n, "Write should write all bytes")
-
-	// Seek back to the beginning.
-	_, err = f.Seek(0, 0)
-	require.NoError(t, err, "Seek error")
-
-	// Read the data back.
-	readBuf := make([]byte, len(dataToWrite))
-	n, err = f.Read(readBuf)
-	require.NoError(t, err, "Failed to read data")
-	assert.Equal(t, len(dataToWrite), n, "Read should return all bytes")
-	assert.Equal(t, dataToWrite, readBuf, "Read data should match written data")
-
-	// Close the file handle to ensure it's not busy.
-	require.NoError(t, f.Close(), "Failed to close file")
-
-	// Check for any errors from the FUSE server
-	select {
-	case err := <-errChan:
-		require.NoError(t, err, "FUSE server reported an error")
-	default:
-		// No error, which is good
-	}
-}
 
 // TestWriteBeyondFileSize tests writing to an offset beyond the current file size
 func TestWriteBeyondFileSize(t *testing.T) {

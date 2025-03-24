@@ -2,20 +2,20 @@ CREATE EXTENSION btree_gist;
 
 -- Create files table
 CREATE TABLE IF NOT EXISTS files (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     name TEXT UNIQUE NOT NULL
 );
 
 -- Create versions table
 CREATE TABLE IF NOT EXISTS versions (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     tag TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create snapshot_layers table
 CREATE TABLE IF NOT EXISTS snapshot_layers (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     file_id INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     active INTEGER DEFAULT 0,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS snapshot_layers (
 
 -- Create chunks table with proper index creation and range columns
 CREATE TABLE IF NOT EXISTS chunks (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     snapshot_layer_id INTEGER REFERENCES snapshot_layers(id),
     layer_range INT8RANGE NOT NULL,
     file_range INT8RANGE NOT NULL,

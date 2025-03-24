@@ -70,4 +70,3 @@ This project is currently in development. Some of planned features are:
 - [ ] Merging of snapshot layers
 - [ ] Garbage collection of snapshot layers
 - [ ] Add proper database indexing
-- [ ] Fix -test.shuffle 1742466944778699921
