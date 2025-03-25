@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
+	"github.com/dustin/go-humanize"
 	"github.com/vinimdocarmo/quackfs/db/sqlc"
 	"github.com/vinimdocarmo/quackfs/internal/storage/metadata"
 )
@@ -106,6 +107,8 @@ func (mgr *Manager) WriteFile(ctx context.Context, filename string, data []byte,
 	if len(activeLayer.Chunks) > 0 {
 		layerSize = activeLayer.Chunks[len(activeLayer.Chunks)-1].LayerRange[1]
 	}
+
+	mgr.log.Debug("active layer info", "chunks", len(activeLayer.Chunks), "bytes", humanize.Bytes(layerSize))
 
 	layerRange := [2]uint64{layerSize, layerSize + uint64(len(data))}
 	fileRange := [2]uint64{offset, offset + uint64(len(data))}
