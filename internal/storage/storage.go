@@ -297,12 +297,6 @@ func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64
 
 		if endPos <= uint64(len(buf)) {
 			copy(buf[bufferPos:endPos], data[chunkStartPos:chunkStartPos+dataSize])
-		} else {
-			// Handle case where chunk extends beyond current buffer
-			newBuf := make([]byte, endPos)
-			copy(newBuf, buf)
-			copy(newBuf[bufferPos:endPos], data[chunkStartPos:chunkStartPos+dataSize])
-			buf = newBuf
 		}
 	}
 

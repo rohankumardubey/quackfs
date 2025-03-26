@@ -374,13 +374,9 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 		return syscall.EINVAL
 	}
 
-	// For consistency, we'll make a copy of the data to prevent races
-	dataCopy := make([]byte, len(req.Data))
-	copy(dataCopy, req.Data)
-
 	if wal.IsWALFile(f.name) {
 		f.log.Debug("Writing WAL file", "name", f.name)
-		bytesWritten, err := f.wm.Write(f.name, dataCopy, uint64(req.Offset))
+		bytesWritten, err := f.wm.Write(f.name, req.Data, uint64(req.Offset))
 		if err != nil {
 			f.log.Error("Failed to write WAL file", "name", f.name, "error", err)
 			return fmt.Errorf("failed to write WAL data: %v", err)
@@ -394,13 +390,13 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 		return nil
 	}
 
-	err := f.sm.WriteFile(ctx, f.name, dataCopy, uint64(req.Offset))
+	err := f.sm.WriteFile(ctx, f.name, req.Data, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
 		return fmt.Errorf("failed to write data: %v", err)
 	}
 
-	f.fileSize = uint64(req.Offset) + uint64(len(dataCopy))
+	f.fileSize = uint64(req.Offset) + uint64(len(req.Data))
 	f.modified = time.Now()
 
 	resp.Size = len(req.Data)
