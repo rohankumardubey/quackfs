@@ -12,9 +12,9 @@ import (
 	"bazil.org/fuse/fs"
 	"github.com/charmbracelet/log"
 	"github.com/stretchr/testify/require"
-	"github.com/vinimdocarmo/quackfs/internal/logger"
 	"github.com/vinimdocarmo/quackfs/internal/quackfstest"
 	"github.com/vinimdocarmo/quackfs/internal/storage"
+	"github.com/vinimdocarmo/quackfs/pkg/logger"
 )
 
 // TestWriteBeyondFileSize tests writing to an offset beyond the current file size

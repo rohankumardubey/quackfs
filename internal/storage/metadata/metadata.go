@@ -3,7 +3,6 @@ package metadata
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,8 +10,6 @@ import (
 	"github.com/vinimdocarmo/quackfs/db/sqlc"
 	"github.com/vinimdocarmo/quackfs/db/types"
 )
-
-var ErrNotFound = errors.New("not found")
 
 // Chunk holds information about where data was written in the layer data
 type Chunk struct {
@@ -88,7 +85,7 @@ func (ms *MetadataStore) GetFileIDByName(ctx context.Context, name string, opts 
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return 0, ErrNotFound
+			return 0, types.ErrNotFound
 		}
 		return 0, err
 	}

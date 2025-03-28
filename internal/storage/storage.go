@@ -9,11 +9,9 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/dustin/go-humanize"
 	"github.com/vinimdocarmo/quackfs/db/sqlc"
+	"github.com/vinimdocarmo/quackfs/db/types"
 	"github.com/vinimdocarmo/quackfs/internal/storage/metadata"
 )
-
-// Use ErrNotFound from metadata package
-var ErrNotFound = metadata.ErrNotFound
 
 type objectStore interface {
 	// PutObject uploads data to the object store.
@@ -406,7 +404,7 @@ func (mgr *Manager) Checkpoint(ctx context.Context, filename string, version str
 
 	fileID, err := mgr.metaStore.GetFileIDByName(ctx, filename, metadata.WithTx(tx))
 	if err != nil {
-		if err == metadata.ErrNotFound {
+		if err == types.ErrNotFound {
 			mgr.log.Warn("File not found, nothing to checkpoint", "filename", filename)
 			return nil
 		}

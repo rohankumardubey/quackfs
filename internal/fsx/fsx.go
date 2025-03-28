@@ -10,6 +10,7 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/charmbracelet/log"
+	"github.com/vinimdocarmo/quackfs/db/types"
 	"github.com/vinimdocarmo/quackfs/internal/storage"
 	"github.com/vinimdocarmo/quackfs/internal/storage/wal"
 )
@@ -116,7 +117,7 @@ func (dir Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 
 	size, err := dir.sm.SizeOf(ctx, name)
 	if err != nil {
-		if err == storage.ErrNotFound {
+		if err == types.ErrNotFound {
 			return nil, syscall.ENOENT
 		}
 		return nil, err

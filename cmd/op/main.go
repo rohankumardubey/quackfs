@@ -14,9 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	log "github.com/charmbracelet/log"
 	_ "github.com/lib/pq"
-	"github.com/vinimdocarmo/quackfs/internal/logger"
 	"github.com/vinimdocarmo/quackfs/internal/storage"
 	objectstore "github.com/vinimdocarmo/quackfs/internal/storage/object"
+	"github.com/vinimdocarmo/quackfs/pkg/logger"
 )
 
 func main() {
