@@ -270,7 +270,7 @@ func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64
 		if !chunk.Flushed {
 			data = activeLayer.Data[chunk.LayerRange[0]:chunk.LayerRange[1]]
 		} else {
-			data, err = mgr.getChunkData(ctx, mgr.metaStore, mgr.objectStore, chunk)
+			data, err = mgr.getChunkData(ctx, chunk)
 			if err != nil {
 				mgr.log.Error("Failed to get chunk data", "error", err)
 				return nil, fmt.Errorf("failed to get chunk data: %w", err)
@@ -470,8 +470,8 @@ func (mgr *Manager) LoadLayersByFileID(ctx context.Context, fileID uint64, opts 
 }
 
 // getChunkData retrieves chunk data from the object store using range requests
-func (mgr *Manager) getChunkData(ctx context.Context, ms *metadata.MetadataStore, objectStore objectStore, c metadata.Chunk) ([]byte, error) {
-	objectKey, err := ms.GetObjectKey(ctx, c.LayerID)
+func (mgr *Manager) getChunkData(ctx context.Context, c metadata.Chunk) ([]byte, error) {
+	objectKey, err := mgr.metaStore.GetObjectKey(ctx, c.LayerID)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving object key: %w", err)
 	}
@@ -481,7 +481,7 @@ func (mgr *Manager) getChunkData(ctx context.Context, ms *metadata.MetadataStore
 	}
 
 	layerSize := c.LayerRange[1] - c.LayerRange[0]
-	data, err := objectStore.GetObject(ctx, objectKey, [2]uint64{c.LayerRange[0], c.LayerRange[1] - 1})
+	data, err := mgr.objectStore.GetObject(ctx, objectKey, [2]uint64{c.LayerRange[0], c.LayerRange[1] - 1})
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving data from object store: %w", err)
 	}
