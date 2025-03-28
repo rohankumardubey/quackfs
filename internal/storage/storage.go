@@ -481,7 +481,8 @@ func (mgr *Manager) getChunkData(ctx context.Context, c metadata.Chunk) ([]byte,
 	}
 
 	layerSize := c.LayerRange[1] - c.LayerRange[0]
-	data, err := mgr.objectStore.GetObject(ctx, objectKey, [2]uint64{c.LayerRange[0], c.LayerRange[1] - 1})
+	dataRange := [2]uint64{c.LayerRange[0], c.LayerRange[1] - 1} // layer range is exclusive of the end, but object range is inclusive
+	data, err := mgr.objectStore.GetObject(ctx, objectKey, dataRange)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving data from object store: %w", err)
 	}
@@ -491,16 +492,4 @@ func (mgr *Manager) getChunkData(ctx context.Context, c metadata.Chunk) ([]byte,
 	}
 
 	return data, nil
-}
-
-// close closes the database.
-func (mgr *Manager) Close() error {
-	mgr.log.Debug("Closing metadata store database connection")
-	err := mgr.db.Close()
-	if err != nil {
-		mgr.log.Error("Error closing database connection", "error", err)
-	} else {
-		mgr.log.Debug("Database connection closed successfully")
-	}
-	return err
 }

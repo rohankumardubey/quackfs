@@ -69,7 +69,6 @@ func main() {
 
 	// Create a storage manager
 	sm := storage.NewManager(db, objectStore, log)
-	defer sm.Close()
 
 	// Execute the appropriate command
 	switch command {
