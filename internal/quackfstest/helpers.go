@@ -23,7 +23,6 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 	if err != nil {
 		t.Fatalf("Failed to open database connection: %v", err)
 	}
-	defer db.Close()
 
 	// Create a test log
 	log := logger.New(os.Stderr)
@@ -79,6 +78,10 @@ func SetupStorageManager(t *testing.T) (*storage.Manager, func()) {
 		_, err = db.Exec("DELETE FROM files")
 		if err != nil {
 			t.Fatalf("Failed to clean files table: %v", err)
+		}
+		err = db.Close()
+		if err != nil {
+			t.Fatalf("Failed to close database connection: %v", err)
 		}
 	}
 
