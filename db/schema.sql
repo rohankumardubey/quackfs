@@ -35,3 +35,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     -- for any given snapshot_layer_id, there should be no overlapping layer_ranges
     EXCLUDE USING GIST (snapshot_layer_id WITH =, layer_range WITH &&)
 ); 
+
+CREATE INDEX IF NOT EXISTS idx_files_name ON files(name);
+CREATE INDEX IF NOT EXISTS idx_versions_tag ON versions(tag);
+CREATE INDEX IF NOT EXISTS idx_snapshot_layers_file_version ON snapshot_layers(file_id, version_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_layer_range ON chunks USING GIST(snapshot_layer_id, file_range);
