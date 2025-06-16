@@ -3,13 +3,13 @@ package storage_test
 import (
 	"context"
 	"database/sql"
+	"os"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vinimdocarmo/quackfs/internal/quackfstest"
-	"github.com/vinimdocarmo/quackfs/internal/storage"
 )
 
 func TestWriteReadActiveLayer(t *testing.T) {
@@ -560,6 +560,12 @@ func TestVersionedLayers(t *testing.T) {
 }
 
 func TestGetDataRangeWithVersion(t *testing.T) {
+	// Skip test if no database connection is available
+	connStr := os.Getenv("POSTGRES_TEST_CONN")
+	if connStr == "" {
+		t.Skip("Skipping test: POSTGRES_TEST_CONN environment variable not set")
+	}
+
 	mgr, cleanup := quackfstest.SetupStorageManager(t)
 	defer cleanup()
 
@@ -595,26 +601,47 @@ func TestGetDataRangeWithVersion(t *testing.T) {
 	err = mgr.WriteFile(ctx, filename, finalContent, 0)
 	require.NoError(t, err, "Failed to write final content")
 
+	// Test read-only mode when head is set
+	err = mgr.SetHead(ctx, filename, v1Tag)
+	require.NoError(t, err)
+
 	// Test reading with version v1
-	v1Content, err := mgr.ReadFile(ctx, filename, 0, 100, storage.WithVersion(v1Tag))
-	require.NoError(t, err, "Failed to read content with version v1")
+	v1Content, err := mgr.ReadFile(ctx, filename, 0, 100)
+	require.NoError(t, err)
 	assert.Equal(t, string(v1Content), string(initialContent), "Expected content for version v1 to be %q, got %q", initialContent, v1Content)
 
+	// Try to write to file with head set - should fail
+	err = mgr.WriteFile(ctx, filename, []byte("this should fail"), 0)
+	require.Error(t, err, "Expected error when writing to file with head set")
+	assert.Contains(t, err.Error(), "read-only mode", "Error should mention read-only mode")
+
+	// Try to checkpoint file with head set - should fail
+	err = mgr.Checkpoint(ctx, filename, "new-version")
+	require.Error(t, err, "Expected error when checkpointing file with head set")
+	assert.Contains(t, err.Error(), "read-only mode", "Error should mention read-only mode")
+
+	// Change to a different version
+	err = mgr.SetHead(ctx, filename, v2Tag)
+	require.NoError(t, err)
+
 	// Test reading with version v2
-	v2Content, err := mgr.ReadFile(ctx, filename, 0, 100, storage.WithVersion(v2Tag))
+	v2Content, err := mgr.ReadFile(ctx, filename, 0, 100)
 	require.NoError(t, err, "Failed to read content with version v2")
 	assert.Equal(t, string(v2Content), string(updatedContent), "Expected content for version v2 to be %q, got %q", updatedContent, v2Content)
+
+	// Remove the head to allow modifications again
+	err = mgr.DeleteHead(ctx, filename)
+	require.NoError(t, err)
+
+	// Now writing should work again
+	newContent := []byte("+++++++++++++++")
+	err = mgr.WriteFile(ctx, filename, newContent, 0)
+	require.NoError(t, err, "Writing should succeed after head is removed")
 
 	// Test reading latest content (no version specified)
 	latestContent, err := mgr.ReadFile(ctx, filename, 0, 100)
 	require.NoError(t, err, "Failed to read latest content")
-
-	assert.Equal(t, string(latestContent), string(finalContent), "Expected latest content to be %q, got %q", finalContent, latestContent)
-
-	// Test reading with non-existent version
-	_, err = mgr.ReadFile(ctx, filename, 0, 100, storage.WithVersion("non_existent_version"))
-	assert.Error(t, err, "Expected error when reading with non-existent version")
-	assert.Contains(t, err.Error(), "version tag not found", "Error should indicate version tag not found")
+	assert.Equal(t, string(latestContent), string(newContent), "Expected latest content to be %q, got %q", newContent, latestContent)
 }
 
 func TestWithinAndOverlappingWrites(t *testing.T) {
@@ -921,4 +948,64 @@ func getVersionTagByID(t *testing.T, ctx context.Context, db *sql.DB, id int64) 
 	}
 
 	return tag
+}
+
+func TestHeadReadOnlyMode(t *testing.T) {
+	// Skip test if no database connection is available
+	connStr := os.Getenv("POSTGRES_TEST_CONN")
+	if connStr == "" {
+		t.Skip("Skipping test: POSTGRES_TEST_CONN environment variable not set")
+	}
+
+	mgr, cleanup := quackfstest.SetupStorageManager(t)
+	defer cleanup()
+
+	// Create a test file
+	filename := "testfile_readonly_mode"
+	ctx := context.Background()
+
+	_, err := mgr.InsertFile(ctx, filename)
+	require.NoError(t, err, "Failed to insert file")
+
+	// Write some data
+	content := []byte("Initial content")
+	err = mgr.WriteFile(ctx, filename, content, 0)
+	require.NoError(t, err, "Failed to write initial content")
+
+	// Checkpoint
+	err = mgr.Checkpoint(ctx, filename, "v1")
+	require.NoError(t, err, "Failed to checkpoint")
+
+	// Set head to version
+	err = mgr.SetHead(ctx, filename, "v1")
+	require.NoError(t, err, "Failed to set head")
+
+	// Verify we can read the content
+	readContent, err := mgr.ReadFile(ctx, filename, 0, 100)
+	require.NoError(t, err, "Reading should succeed in read-only mode")
+	assert.Equal(t, content, readContent, "Content should match")
+
+	// Try to write - should fail due to read-only mode
+	err = mgr.WriteFile(ctx, filename, []byte("New content"), 0)
+	require.Error(t, err, "Writing should fail when head is set")
+	assert.Contains(t, err.Error(), "read-only mode", "Error should mention read-only mode")
+
+	// Try to checkpoint - should fail due to read-only mode
+	err = mgr.Checkpoint(ctx, filename, "v2")
+	require.Error(t, err, "Checkpointing should fail when head is set")
+	assert.Contains(t, err.Error(), "read-only mode", "Error should mention read-only mode")
+
+	// Remove head to restore write access
+	err = mgr.DeleteHead(ctx, filename)
+	require.NoError(t, err, "Failed to delete head")
+
+	// Now writing should work
+	newContent := []byte("New content after head removal")
+	err = mgr.WriteFile(ctx, filename, newContent, 0)
+	require.NoError(t, err, "Writing should succeed after head is removed")
+
+	// Verify the new content is visible
+	readNewContent, err := mgr.ReadFile(ctx, filename, 0, 100)
+	require.NoError(t, err, "Reading should succeed after head is removed")
+	assert.Equal(t, newContent, readNewContent, "New content should be visible")
 }

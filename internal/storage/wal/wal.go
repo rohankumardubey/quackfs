@@ -227,7 +227,7 @@ func (wm *WALManager) Remove(ctx context.Context, filename string) error {
 	}
 
 	dbFilename := wm.GetDBFilename(filename)
-	checkpointID := fmt.Sprintf("checkpoint-%s", uuid.New().String())
+	checkpointID := uuid.New().String()
 
 	if err := wm.mgr.Checkpoint(ctx, dbFilename, checkpointID); err != nil {
 		wm.log.Error("Failed to checkpoint database", "dbFilename", dbFilename, "error", err)

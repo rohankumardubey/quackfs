@@ -27,11 +27,23 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.calcFileSizeStmt, err = db.PrepareContext(ctx, calcFileSize); err != nil {
 		return nil, fmt.Errorf("error preparing query CalcFileSize: %w", err)
 	}
+	if q.deleteHeadStmt, err = db.PrepareContext(ctx, deleteHead); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteHead: %w", err)
+	}
 	if q.getAllFilesStmt, err = db.PrepareContext(ctx, getAllFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAllFiles: %w", err)
 	}
+	if q.getAllHeadsStmt, err = db.PrepareContext(ctx, getAllHeads); err != nil {
+		return nil, fmt.Errorf("error preparing query GetAllHeads: %w", err)
+	}
 	if q.getFileIDByNameStmt, err = db.PrepareContext(ctx, getFileIDByName); err != nil {
 		return nil, fmt.Errorf("error preparing query GetFileIDByName: %w", err)
+	}
+	if q.getFileVersionsStmt, err = db.PrepareContext(ctx, getFileVersions); err != nil {
+		return nil, fmt.Errorf("error preparing query GetFileVersions: %w", err)
+	}
+	if q.getHeadVersionStmt, err = db.PrepareContext(ctx, getHeadVersion); err != nil {
+		return nil, fmt.Errorf("error preparing query GetHeadVersion: %w", err)
 	}
 	if q.getLayerByVersionStmt, err = db.PrepareContext(ctx, getLayerByVersion); err != nil {
 		return nil, fmt.Errorf("error preparing query GetLayerByVersion: %w", err)
@@ -48,6 +60,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getOverlappingChunksWithVersionStmt, err = db.PrepareContext(ctx, getOverlappingChunksWithVersion); err != nil {
 		return nil, fmt.Errorf("error preparing query GetOverlappingChunksWithVersion: %w", err)
 	}
+	if q.getVersionIDByTagStmt, err = db.PrepareContext(ctx, getVersionIDByTag); err != nil {
+		return nil, fmt.Errorf("error preparing query GetVersionIDByTag: %w", err)
+	}
 	if q.insertChunkStmt, err = db.PrepareContext(ctx, insertChunk); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertChunk: %w", err)
 	}
@@ -60,6 +75,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.insertVersionStmt, err = db.PrepareContext(ctx, insertVersion); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertVersion: %w", err)
 	}
+	if q.setHeadStmt, err = db.PrepareContext(ctx, setHead); err != nil {
+		return nil, fmt.Errorf("error preparing query SetHead: %w", err)
+	}
 	return &q, nil
 }
 
@@ -70,14 +88,34 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing calcFileSizeStmt: %w", cerr)
 		}
 	}
+	if q.deleteHeadStmt != nil {
+		if cerr := q.deleteHeadStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteHeadStmt: %w", cerr)
+		}
+	}
 	if q.getAllFilesStmt != nil {
 		if cerr := q.getAllFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getAllFilesStmt: %w", cerr)
 		}
 	}
+	if q.getAllHeadsStmt != nil {
+		if cerr := q.getAllHeadsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getAllHeadsStmt: %w", cerr)
+		}
+	}
 	if q.getFileIDByNameStmt != nil {
 		if cerr := q.getFileIDByNameStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getFileIDByNameStmt: %w", cerr)
+		}
+	}
+	if q.getFileVersionsStmt != nil {
+		if cerr := q.getFileVersionsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getFileVersionsStmt: %w", cerr)
+		}
+	}
+	if q.getHeadVersionStmt != nil {
+		if cerr := q.getHeadVersionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getHeadVersionStmt: %w", cerr)
 		}
 	}
 	if q.getLayerByVersionStmt != nil {
@@ -105,6 +143,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getOverlappingChunksWithVersionStmt: %w", cerr)
 		}
 	}
+	if q.getVersionIDByTagStmt != nil {
+		if cerr := q.getVersionIDByTagStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getVersionIDByTagStmt: %w", cerr)
+		}
+	}
 	if q.insertChunkStmt != nil {
 		if cerr := q.insertChunkStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing insertChunkStmt: %w", cerr)
@@ -123,6 +166,11 @@ func (q *Queries) Close() error {
 	if q.insertVersionStmt != nil {
 		if cerr := q.insertVersionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing insertVersionStmt: %w", cerr)
+		}
+	}
+	if q.setHeadStmt != nil {
+		if cerr := q.setHeadStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setHeadStmt: %w", cerr)
 		}
 	}
 	return err
@@ -165,17 +213,23 @@ type Queries struct {
 	db                                  DBTX
 	tx                                  *sql.Tx
 	calcFileSizeStmt                    *sql.Stmt
+	deleteHeadStmt                      *sql.Stmt
 	getAllFilesStmt                     *sql.Stmt
+	getAllHeadsStmt                     *sql.Stmt
 	getFileIDByNameStmt                 *sql.Stmt
+	getFileVersionsStmt                 *sql.Stmt
+	getHeadVersionStmt                  *sql.Stmt
 	getLayerByVersionStmt               *sql.Stmt
 	getLayerChunksStmt                  *sql.Stmt
 	getLayersByFileIDStmt               *sql.Stmt
 	getObjectKeyStmt                    *sql.Stmt
 	getOverlappingChunksWithVersionStmt *sql.Stmt
+	getVersionIDByTagStmt               *sql.Stmt
 	insertChunkStmt                     *sql.Stmt
 	insertFileStmt                      *sql.Stmt
 	insertLayerStmt                     *sql.Stmt
 	insertVersionStmt                   *sql.Stmt
+	setHeadStmt                         *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
@@ -183,16 +237,22 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		db:                                  tx,
 		tx:                                  tx,
 		calcFileSizeStmt:                    q.calcFileSizeStmt,
+		deleteHeadStmt:                      q.deleteHeadStmt,
 		getAllFilesStmt:                     q.getAllFilesStmt,
+		getAllHeadsStmt:                     q.getAllHeadsStmt,
 		getFileIDByNameStmt:                 q.getFileIDByNameStmt,
+		getFileVersionsStmt:                 q.getFileVersionsStmt,
+		getHeadVersionStmt:                  q.getHeadVersionStmt,
 		getLayerByVersionStmt:               q.getLayerByVersionStmt,
 		getLayerChunksStmt:                  q.getLayerChunksStmt,
 		getLayersByFileIDStmt:               q.getLayersByFileIDStmt,
 		getObjectKeyStmt:                    q.getObjectKeyStmt,
 		getOverlappingChunksWithVersionStmt: q.getOverlappingChunksWithVersionStmt,
+		getVersionIDByTagStmt:               q.getVersionIDByTagStmt,
 		insertChunkStmt:                     q.insertChunkStmt,
 		insertFileStmt:                      q.insertFileStmt,
 		insertLayerStmt:                     q.insertLayerStmt,
 		insertVersionStmt:                   q.insertVersionStmt,
+		setHeadStmt:                         q.setHeadStmt,
 	}
 }

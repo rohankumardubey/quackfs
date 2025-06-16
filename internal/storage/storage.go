@@ -60,6 +60,13 @@ func (mgr *Manager) WriteFile(ctx context.Context, filename string, data []byte,
 		return fmt.Errorf("failed to get file ID: %w", err)
 	}
 
+	// Check if file has a head pointer, if so it's in read-only mode
+	_, _, err = mgr.metaStore.GetHeadVersion(ctx, fileID)
+	if err == nil {
+		mgr.log.Error("Cannot write to file with head pointing to version", "filename", filename)
+		return fmt.Errorf("cannot write to file: %s is in read-only mode because a head is set", filename)
+	}
+
 	activeLayer, exists := mgr.memtable[fileID]
 	if !exists {
 		activeLayer = &metadata.Layer{
@@ -154,48 +161,16 @@ func (mgr *Manager) SizeOf(ctx context.Context, filename string) (uint64, error)
 	return mgr.calcSizeOf(ctx, fileID)
 }
 
-// readFileOpt defines functional options for GetDataRange
-type readFileOpt func(*readFileOpts)
-
-// readFileOpts holds all options for GetDataRange
-type readFileOpts struct {
-	version string
-}
-
-// WithVersion specifies a version tag to retrieve data up to
-// If no version is specified, the current database state is used
-func WithVersion(v string) readFileOpt {
-	return func(opts *readFileOpts) {
-		opts.version = v
-	}
-}
-
 // ReadFile returns a slice of data from the given offset up to size bytes.
-// Optional version tag can be specified to retrieve data up to a specific version.
-func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64, size uint64, opts ...readFileOpt) ([]byte, error) {
+// It automatically uses the head version if available, otherwise uses the latest version.
+func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64, size uint64) ([]byte, error) {
 	mgr.mu.RLock()
 	defer mgr.mu.RUnlock()
 
-	options := readFileOpts{}
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	hasVersion := options.version != ""
-	var versionedLayerId uint64
-
-	if hasVersion {
-		mgr.log.Debug("reading file",
-			"filename", filename,
-			"offset", offset,
-			"size", size,
-			"version", options.version)
-	} else {
-		mgr.log.Debug("reading file",
-			"filename", filename,
-			"offset", offset,
-			"size", size)
-	}
+	mgr.log.Debug("reading file",
+		"filename", filename,
+		"offset", offset,
+		"size", size)
 
 	tx, err := mgr.db.BeginTx(ctx, &sql.TxOptions{
 		ReadOnly: true,
@@ -228,11 +203,16 @@ func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64
 		return nil, fmt.Errorf("failed to get file ID: %w", err)
 	}
 
-	// check if there's a layer for this file with the given version tag
-	if hasVersion {
-		versionedLayer, err := mgr.metaStore.GetLayerByVersion(ctx, fileID, options.version, tx)
+	// Check if the file has a head pointer and use that version if available
+	var versionedLayerId uint64
+	headVersionId, headVersionTag, err := mgr.metaStore.GetHeadVersion(ctx, fileID, metadata.WithTx(tx))
+	hasHeadVersion := headVersionId > 0
+
+	if hasHeadVersion {
+		mgr.log.Debug("using head version for file", "filename", filename, "version", headVersionTag)
+		versionedLayer, err := mgr.metaStore.GetLayerByVersion(ctx, fileID, headVersionTag, tx)
 		if err != nil {
-			mgr.log.Error("Version tag not found or error fetching layer", "version", options.version, "filename", filename, "error", err)
+			mgr.log.Error("Error fetching layer for head version", "version", headVersionTag, "filename", filename, "error", err)
 			return nil, err
 		}
 		versionedLayerId = versionedLayer.ID
@@ -307,13 +287,13 @@ func (mgr *Manager) ReadFile(ctx context.Context, filename string, offset uint64
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	if hasVersion {
-		mgr.log.Debug("Returning data range with version",
+	if hasHeadVersion {
+		mgr.log.Debug("Returning data range with head version",
 			"offset", offset,
 			"size", len(buf),
-			"version", options.version)
+			"version", headVersionTag)
 	} else {
-		mgr.log.Debug("Returning data range",
+		mgr.log.Debug("Returning data range (latest version)",
 			"offset", offset,
 			"size", len(buf))
 	}
@@ -349,7 +329,7 @@ func (mgr *Manager) InsertFile(ctx context.Context, name string) (uint64, error)
 // File size is determined by the highest end offset across all chunks
 func (mgr *Manager) calcSizeOf(ctx context.Context, fileID uint64, opts ...metadata.QueryOpt) (uint64, error) {
 	activeLayer, exists := mgr.memtable[fileID]
-	if exists && activeLayer != nil && len(activeLayer.Chunks) > 0 {
+	if exists && len(activeLayer.Chunks) > 0 {
 		endOffset := uint64(0)
 		for _, chunk := range activeLayer.Chunks {
 			if chunk.FileRange[1] > endOffset {
@@ -410,6 +390,16 @@ func (mgr *Manager) Checkpoint(ctx context.Context, filename string, version str
 		}
 		mgr.log.Error("Failed to get file ID", "filename", filename, "error", err)
 		return fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Check if file has a head pointer, if so it's in read-only mode
+	_, _, err = mgr.metaStore.GetHeadVersion(ctx, fileID, metadata.WithTx(tx))
+	if err == nil {
+		mgr.log.Error("Cannot checkpoint file with head pointing to version", "filename", filename)
+		return fmt.Errorf("cannot checkpoint file: %s is in read-only mode because a head is set, use DeleteHead first", filename)
+	} else if err != types.ErrNotFound {
+		mgr.log.Error("Failed to check head version", "filename", filename, "error", err)
+		return fmt.Errorf("failed to check head version: %w", err)
 	}
 
 	activeLayer, exists := mgr.memtable[fileID]
@@ -492,4 +482,159 @@ func (mgr *Manager) getChunkData(ctx context.Context, c metadata.Chunk) ([]byte,
 	}
 
 	return data, nil
+}
+
+// SetHead sets the head pointer for a file to a specific version
+func (mgr *Manager) SetHead(ctx context.Context, filename string, version string) error {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	tx, err := mgr.db.BeginTx(ctx, nil)
+	if err != nil {
+		mgr.log.Error("Failed to begin transaction", "error", err)
+		return err
+	}
+
+	// Setup deferred rollback in case of error or panic
+	defer func() {
+		if p := recover(); p != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				mgr.log.Error("Failed to rollback transaction after panic", "error", rbErr)
+			}
+			panic(p)
+		} else if err != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				mgr.log.Error("Failed to rollback transaction", "error", rbErr)
+			}
+		}
+	}()
+
+	// Get the file ID
+	fileID, err := mgr.metaStore.GetFileIDByName(ctx, filename, metadata.WithTx(tx))
+	if err != nil {
+		mgr.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Make sure the version exists by getting its layer
+	layer, err := mgr.metaStore.GetLayerByVersion(ctx, fileID, version, tx)
+	if err != nil {
+		mgr.log.Error("Failed to get layer for version", "version", version, "error", err)
+		return fmt.Errorf("failed to get layer for version: %w", err)
+	}
+
+	// Set the head
+	err = mgr.metaStore.SetHead(ctx, fileID, layer.VersionID, metadata.WithTx(tx))
+	if err != nil {
+		mgr.log.Error("Failed to set head", "filename", filename, "version", version, "error", err)
+		return fmt.Errorf("failed to set head: %w", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		mgr.log.Error("Failed to commit transaction", "error", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	mgr.log.Info("Head set successfully", "filename", filename, "version", version)
+
+	return nil
+}
+
+// GetHead gets the current version the file head is pointing to
+func (mgr *Manager) GetHead(ctx context.Context, filename string) (string, error) {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	// Get the file ID
+	fileID, err := mgr.metaStore.GetFileIDByName(ctx, filename)
+	if err != nil {
+		mgr.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return "", fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Get the head version
+	_, versionTag, err := mgr.metaStore.GetHeadVersion(ctx, fileID)
+	if err != nil {
+		if err == types.ErrNotFound {
+			mgr.log.Info("No head set for file", "filename", filename)
+			return "", nil
+		}
+		mgr.log.Error("Failed to get head version", "filename", filename, "error", err)
+		return "", fmt.Errorf("failed to get head version: %w", err)
+	}
+
+	return versionTag, nil
+}
+
+// DeleteHead removes the head pointer for a file
+func (mgr *Manager) DeleteHead(ctx context.Context, filename string) error {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	// Get the file ID
+	fileID, err := mgr.metaStore.GetFileIDByName(ctx, filename)
+	if err != nil {
+		mgr.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Delete the head
+	err = mgr.metaStore.DeleteHead(ctx, fileID)
+	if err != nil {
+		mgr.log.Error("Failed to delete head", "filename", filename, "error", err)
+		return fmt.Errorf("failed to delete head: %w", err)
+	}
+
+	mgr.log.Info("Head deleted successfully", "filename", filename)
+
+	return nil
+}
+
+// GetAllHeads returns all head pointers with file names and version tags
+func (mgr *Manager) GetAllHeads(ctx context.Context) ([]sqlc.GetAllHeadsRow, error) {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	heads, err := mgr.metaStore.GetAllHeads(ctx)
+	if err != nil {
+		mgr.log.Error("Failed to get all heads", "error", err)
+		return nil, fmt.Errorf("failed to get all heads: %w", err)
+	}
+
+	return heads, nil
+}
+
+// GetFileVersions returns all versions for a specific file
+func (mgr *Manager) GetFileVersions(ctx context.Context, filename string) ([]sqlc.Version, error) {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	// Get the file ID
+	fileID, err := mgr.metaStore.GetFileIDByName(ctx, filename)
+	if err != nil {
+		mgr.log.Error("Failed to get file ID", "filename", filename, "error", err)
+		return nil, fmt.Errorf("failed to get file ID: %w", err)
+	}
+
+	// Get all versions for the file
+	versions, err := mgr.metaStore.GetFileVersions(ctx, fileID)
+	if err != nil {
+		mgr.log.Error("Failed to get file versions", "filename", filename, "error", err)
+		return nil, fmt.Errorf("failed to get file versions: %w", err)
+	}
+
+	return versions, nil
+}
+
+// close closes the database.
+func (mgr *Manager) Close() error {
+	mgr.log.Debug("Closing metadata store database connection")
+	err := mgr.db.Close()
+	if err != nil {
+		mgr.log.Error("Error closing database connection", "error", err)
+	} else {
+		mgr.log.Debug("Database connection closed successfully")
+	}
+	return err
 }

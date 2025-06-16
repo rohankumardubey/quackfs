@@ -10,17 +10,23 @@ import (
 
 type Querier interface {
 	CalcFileSize(ctx context.Context, fileID uint64) (int64, error)
+	DeleteHead(ctx context.Context, fileID uint64) error
 	GetAllFiles(ctx context.Context) ([]File, error)
+	GetAllHeads(ctx context.Context) ([]GetAllHeadsRow, error)
 	GetFileIDByName(ctx context.Context, name string) (uint64, error)
+	GetFileVersions(ctx context.Context, fileID uint64) ([]Version, error)
+	GetHeadVersion(ctx context.Context, fileID uint64) (GetHeadVersionRow, error)
 	GetLayerByVersion(ctx context.Context, arg GetLayerByVersionParams) (GetLayerByVersionRow, error)
 	GetLayerChunks(ctx context.Context, snapshotLayerID uint64) ([]GetLayerChunksRow, error)
 	GetLayersByFileID(ctx context.Context, fileID uint64) ([]GetLayersByFileIDRow, error)
 	GetObjectKey(ctx context.Context, id uint64) (string, error)
 	GetOverlappingChunksWithVersion(ctx context.Context, arg GetOverlappingChunksWithVersionParams) ([]GetOverlappingChunksWithVersionRow, error)
+	GetVersionIDByTag(ctx context.Context, tag string) (uint64, error)
 	InsertChunk(ctx context.Context, arg InsertChunkParams) error
 	InsertFile(ctx context.Context, name string) (uint64, error)
 	InsertLayer(ctx context.Context, arg InsertLayerParams) (uint64, error)
 	InsertVersion(ctx context.Context, tag string) (uint64, error)
+	SetHead(ctx context.Context, arg SetHeadParams) error
 }
 
 var _ Querier = (*Queries)(nil)

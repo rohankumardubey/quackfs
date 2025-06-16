@@ -394,3 +394,107 @@ func (ms *MetadataStore) GetAllOverlappingChunks(ctx context.Context, tx *sql.Tx
 
 	return chunks, nil
 }
+
+// SetHead sets the head pointer for a file to a specific version
+func (ms *MetadataStore) SetHead(ctx context.Context, fileID uint64, versionID uint64, opts ...QueryOpt) error {
+	options := QueryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var err error
+	queries := ms.queries
+
+	if options.tx != nil {
+		queries = ms.queries.WithTx(options.tx)
+	}
+
+	err = queries.SetHead(ctx, sqlc.SetHeadParams{
+		FileID:    fileID,
+		VersionID: versionID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set head: %w", err)
+	}
+	return nil
+}
+
+// GetHeadVersion gets the current version the file head is pointing to
+func (ms *MetadataStore) GetHeadVersion(ctx context.Context, fileID uint64, opts ...QueryOpt) (uint64, string, error) {
+	options := QueryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var version sqlc.GetHeadVersionRow
+	var err error
+
+	queries := ms.queries
+
+	if options.tx != nil {
+		queries = ms.queries.WithTx(options.tx)
+	}
+
+	version, err = queries.GetHeadVersion(ctx, fileID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, "", types.ErrNotFound
+		}
+		return 0, "", err
+	}
+	return version.VersionID, version.VersionTag, nil
+}
+
+// DeleteHead removes the head pointer for a file
+func (ms *MetadataStore) DeleteHead(ctx context.Context, fileID uint64, opts ...QueryOpt) error {
+	options := QueryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var err error
+	queries := ms.queries
+
+	if options.tx != nil {
+		queries = ms.queries.WithTx(options.tx)
+	}
+
+	err = queries.DeleteHead(ctx, fileID)
+	if err != nil {
+		return fmt.Errorf("failed to delete head: %w", err)
+	}
+	return nil
+}
+
+// GetAllHeads returns all head pointers
+func (ms *MetadataStore) GetAllHeads(ctx context.Context) ([]sqlc.GetAllHeadsRow, error) {
+	rows, err := ms.queries.GetAllHeads(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all heads: %w", err)
+	}
+	return rows, nil
+}
+
+// GetFileVersions returns all versions for a specific file ID
+func (ms *MetadataStore) GetFileVersions(ctx context.Context, fileID uint64, opts ...QueryOpt) ([]sqlc.Version, error) {
+	options := QueryOpts{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	var versions []sqlc.Version
+	var err error
+
+	queries := ms.queries
+
+	if options.tx != nil {
+		queries = ms.queries.WithTx(options.tx)
+	}
+
+	versions, err = queries.GetFileVersions(ctx, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file versions: %w", err)
+	}
+
+	return versions, nil
+}

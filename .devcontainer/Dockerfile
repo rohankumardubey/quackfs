@@ -78,8 +78,6 @@ ENV SHELL=/bin/zsh \
 # Mount for docker-in-docker
 VOLUME [ "/var/lib/docker" ]
 
-CMD [ "sleep", "infinity" ]
-
 # [Optional] Install debugger for development of Codespaces - Not in resulting image by default
 ARG DeveloperBuild
 RUN if [ -z $DeveloperBuild ]; then \

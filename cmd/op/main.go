@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	log "github.com/charmbracelet/log"
 	_ "github.com/lib/pq"
+	"github.com/vinimdocarmo/quackfs/db/sqlc"
 	"github.com/vinimdocarmo/quackfs/internal/storage"
 	objectstore "github.com/vinimdocarmo/quackfs/internal/storage/object"
 	"github.com/vinimdocarmo/quackfs/pkg/logger"
@@ -72,10 +77,8 @@ func main() {
 
 	// Execute the appropriate command
 	switch command {
-	case "write":
-		executeWriteCommand(sm, log)
-	case "read":
-		executeReadCommand(sm, log)
+	case "log":
+		executeLogCommand(sm, log)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -87,124 +90,210 @@ func main() {
 func printUsage() {
 	fmt.Println("Usage: op <command> [options]")
 	fmt.Println("Commands:")
-	fmt.Println("  write      - Write data to a file")
-	fmt.Println("  read       - Read and print file content to standard output")
+	fmt.Println("  log        - List all versions for a specific file and indicate head pointer")
 	fmt.Println("")
 	fmt.Println("For detailed command usage:")
-	fmt.Println("  op write -h")
-	fmt.Println("  op read -h")
+	fmt.Println("  op log -h")
 	fmt.Println("")
 	fmt.Println("Examples:")
-	fmt.Println("  op read -file myfile.txt")
-	fmt.Println("  op read -file myfile.txt -version v1.0")
+	fmt.Println("  op log -file myfile.txt")
 }
 
-// executeWriteCommand handles the "write" subcommand
-func executeWriteCommand(sm *storage.Manager, log *log.Logger) {
-	// Define command-line flags for write command
-	writeCmd := flag.NewFlagSet("write", flag.ExitOnError)
-	fileName := writeCmd.String("file", "", "Target file to write to")
-	offset := writeCmd.Uint64("offset", 0, "Offset in the file to start writing from")
-	data := writeCmd.String("data", "", "ASCII data to write to the file")
+func executeLogCommand(sm *storage.Manager, log *log.Logger) {
+	logCmd := flag.NewFlagSet("log", flag.ExitOnError)
+	fileName := logCmd.String("file", "", "Target file to show version history for")
 
-	// Parse the flags
-	writeCmd.Parse(os.Args[1:])
+	logCmd.Parse(os.Args[1:])
 
-	// Validate required flags
 	if *fileName == "" {
 		log.Error("Missing required flag: -file")
-		fmt.Println("Usage: op write -file <filename> -offset <offset> -data <data>")
-		os.Exit(1)
-	}
-
-	if *data == "" {
-		log.Error("Missing required flag: -data")
-		fmt.Println("Usage: op write -file <filename> -offset <offset> -data <data>")
+		fmt.Println("Usage: op log -file <filename>")
 		os.Exit(1)
 	}
 
 	ctx := context.Background()
 
-	// Write the data to the file at the specified offset
-	dataBytes := []byte(*data)
-	err := sm.WriteFile(ctx, *fileName, dataBytes, *offset)
+	versions, err := sm.GetFileVersions(ctx, *fileName)
 	if err != nil {
-		log.Fatal("Failed to write data", "error", err)
+		log.Fatal("Failed to get file versions", "error", err)
 	}
 
-	log.Info("Data written successfully",
-		"fileName", *fileName,
-		"offset", *offset,
-		"dataSize", len(dataBytes))
+	if len(versions) == 0 {
+		fmt.Printf("No versions found for file: %s\n", *fileName)
+		return
+	}
 
-	fmt.Printf("Successfully wrote %d bytes to %s at offset %d\n", len(dataBytes), *fileName, *offset)
+	headVersion, err := sm.GetHead(ctx, *fileName)
+	if err != nil {
+		log.Fatal("Failed to get head version", "error", err)
+	}
+
+	runBubbleteaUI(versions, headVersion, *fileName, sm)
 }
 
-// executeReadCommand handles the "read" subcommand
-func executeReadCommand(sm *storage.Manager, log *log.Logger) {
-	// Define command-line flags for read command
-	readCmd := flag.NewFlagSet("read", flag.ExitOnError)
-	fileName := readCmd.String("file", "", "Target file to read from")
-	offset := readCmd.Uint64("offset", 0, "Offset in the file to start reading from (default: 0)")
-	size := readCmd.Uint64("size", 0, "Number of bytes to read (default: entire file)")
-	version := readCmd.String("version", "", "Version tag to read from (default: latest)")
+// Model represents the UI state
+type Model struct {
+	table       table.Model
+	fileName    string
+	headVersion string
+	versions    []sqlc.Version
+	sm          *storage.Manager
+}
 
-	// Parse the flags
-	readCmd.Parse(os.Args[1:])
+// Init initializes the model
+func (m Model) Init() tea.Cmd {
+	return nil
+}
 
-	// Validate required flags
-	if *fileName == "" {
-		log.Error("Missing required flag: -file")
-		fmt.Println("Usage: op read -file <filename> [-offset <offset>] [-size <size>] [-version <tag>]")
-		os.Exit(1)
+// Update handles user input and updates the model
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "enter":
+			selectedRow := m.table.SelectedRow()
+			if len(selectedRow) > 0 {
+				selectedVersion := selectedRow[0]
+
+				if selectedVersion != m.headVersion {
+					ctx := context.Background()
+					if err := m.sm.SetHead(ctx, m.fileName, selectedVersion); err == nil {
+						m.headVersion = selectedVersion
+						m.table = m.refreshTableModel()
+						return m, nil
+					}
+				}
+			}
+		case "d":
+			// Delete head pointer
+			ctx := context.Background()
+			if err := m.sm.DeleteHead(ctx, m.fileName); err == nil {
+				m.headVersion = "" // Clear the head version
+				m.table = m.refreshTableModel()
+				return m, nil
+			}
+		}
+	}
+	m.table, cmd = m.table.Update(msg)
+	return m, cmd
+}
+
+// View renders the current UI state
+func (m Model) View() string {
+	title := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFFDF5")).
+		Background(lipgloss.Color("#4A5568")).
+		Padding(0, 1).
+		Bold(true).
+		Width(len(m.fileName) + 24).
+		Render(fmt.Sprintf(" Version History for: %s ", m.fileName))
+
+	helpText := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		Render("↑/↓: Navigate • enter: Set as head • d: Delete head • q: Quit")
+
+	spacer := lipgloss.NewStyle().Height(1).Render("")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		title,
+		spacer,
+		m.table.View(),
+		spacer,
+		helpText,
+	)
+}
+
+func (m Model) refreshTableModel() table.Model {
+	columns := []table.Column{
+		{Title: "VERSION", Width: 20},
+		{Title: "TIMESTAMP", Width: 30},
+		{Title: "HEAD", Width: 5},
 	}
 
-	ctx := context.Background()
+	rows := make([]table.Row, len(m.versions))
+	for i, v := range m.versions {
+		headIndicator := ""
+		if v.Tag == m.headVersion {
+			headIndicator = "✓"
+		}
 
-	// Get file size to determine how much to read if size is not specified
-	fileSize, err := sm.SizeOf(ctx, *fileName)
-	if err != nil {
-		log.Fatal("Failed to get file size", "error", err)
+		timestamp := "N/A"
+		if v.CreatedAt.Valid {
+			timestamp = v.CreatedAt.Time.Format("2006-01-02 15:04:05.000")
+		}
+
+		rows[i] = table.Row{v.Tag, timestamp, headIndicator}
 	}
 
-	// If size is 0, read the entire file from the offset
-	readSize := *size
-	if readSize == 0 {
-		readSize = fileSize - *offset
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(10),
+	)
+
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		BorderBottom(true).
+		Bold(true)
+	s.Selected = s.Selected.
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("57")).
+		Bold(true)
+	s.Cell = s.Cell.
+		PaddingLeft(1).
+		PaddingRight(1)
+	t.SetStyles(s)
+
+	// Set the cursor to the head version if it exists
+	if m.headVersion != "" {
+		for i, v := range m.versions {
+			if v.Tag == m.headVersion {
+				t.SetCursor(i)
+				break
+			}
+		}
 	}
 
-	var data []byte
+	return t
+}
 
-	data, err = sm.ReadFile(ctx, *fileName, *offset, readSize, storage.WithVersion(*version))
-	if err != nil {
-		log.Fatal("Failed to read data", "error", err)
+func runBubbleteaUI(versions []sqlc.Version, headVersion string, fileName string, sm *storage.Manager) {
+	m := Model{
+		fileName:    fileName,
+		headVersion: headVersion,
+		versions:    versions,
+		sm:          sm,
 	}
 
-	// Print file information
-	if *version != "" {
-		log.Info("Read file content with version",
-			"fileName", *fileName,
-			"offset", *offset,
-			"size", readSize,
-			"bytesRead", len(data),
-			"version", *version)
-	} else {
-		log.Info("Read file content",
-			"fileName", *fileName,
-			"offset", *offset,
-			"size", readSize,
-			"bytesRead", len(data))
+	m.table = m.refreshTableModel()
+
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("Error running UI: %v\n", err)
+
+		fmt.Printf("Version history for file: %s\n", fileName)
+		fmt.Printf("%-20s %-30s %s\n", "VERSION", "TIMESTAMP", "HEAD")
+		fmt.Println(strings.Repeat("-", 60))
+
+		for _, version := range versions {
+			headIndicator := ""
+			if version.Tag == headVersion {
+				headIndicator = "<---"
+			}
+			timestamp := "N/A"
+			if version.CreatedAt.Valid {
+				timestamp = version.CreatedAt.Time.Format("2006-01-02 15:04:05.000")
+			}
+			fmt.Printf("%-20s %-30s %s\n", version.Tag, timestamp, headIndicator)
+		}
 	}
-
-	// Print the data to stdout
-	fmt.Print(string(data))
-
-	// If the output doesn't end with a newline, add one for better terminal display
-	if len(data) > 0 && data[len(data)-1] != '\n' {
-		fmt.Println()
-	}
-
-	log.Info("Read operation completed", "fileName", *fileName, "bytesRead", len(data))
 }
 
 // newDB creates a new database connection

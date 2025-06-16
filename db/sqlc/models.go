@@ -23,6 +23,13 @@ type File struct {
 	Name string `json:"name"`
 }
 
+type Head struct {
+	ID        int64        `json:"id"`
+	FileID    uint64       `json:"fileId"`
+	VersionID uint64       `json:"versionId"`
+	CreatedAt sql.NullTime `json:"createdAt"`
+}
+
 type SnapshotLayer struct {
 	ID        uint64        `json:"id"`
 	FileID    uint64        `json:"fileId"`

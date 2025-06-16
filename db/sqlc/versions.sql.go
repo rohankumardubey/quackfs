@@ -9,6 +9,55 @@ import (
 	"context"
 )
 
+const getFileVersions = `-- name: GetFileVersions :many
+SELECT
+    v.id,
+    v.tag,
+    v.created_at
+FROM
+    versions v
+JOIN
+    snapshot_layers sl ON v.id = sl.version_id
+WHERE
+    sl.file_id = $1
+ORDER BY
+    v.created_at DESC
+`
+
+func (q *Queries) GetFileVersions(ctx context.Context, fileID uint64) ([]Version, error) {
+	rows, err := q.query(ctx, q.getFileVersionsStmt, getFileVersions, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Version{}
+	for rows.Next() {
+		var i Version
+		if err := rows.Scan(&i.ID, &i.Tag, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getVersionIDByTag = `-- name: GetVersionIDByTag :one
+SELECT id FROM versions WHERE tag = $1
+`
+
+func (q *Queries) GetVersionIDByTag(ctx context.Context, tag string) (uint64, error) {
+	row := q.queryRow(ctx, q.getVersionIDByTagStmt, getVersionIDByTag, tag)
+	var id uint64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const insertVersion = `-- name: InsertVersion :one
 INSERT INTO versions (tag) VALUES ($1) RETURNING id
 `

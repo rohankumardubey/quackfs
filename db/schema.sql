@@ -36,6 +36,15 @@ CREATE TABLE IF NOT EXISTS chunks (
     EXCLUDE USING GIST (snapshot_layer_id WITH =, layer_range WITH &&)
 ); 
 
+-- Create heads table to track which version a file is currently pointing to
+CREATE TABLE IF NOT EXISTS heads (
+    id BIGSERIAL PRIMARY KEY,
+    file_id BIGINT NOT NULL REFERENCES files(id),
+    version_id BIGINT NOT NULL REFERENCES versions(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (file_id)
+); 
+
 CREATE INDEX IF NOT EXISTS idx_files_name ON files(name);
 CREATE INDEX IF NOT EXISTS idx_versions_tag ON versions(tag);
 CREATE INDEX IF NOT EXISTS idx_snapshot_layers_file_version ON snapshot_layers(file_id, version_id);

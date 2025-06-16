@@ -59,13 +59,29 @@ $ make test
 
 For other commands, check the Makefile.
 
+### Time Travel
+
+To time travel, you can use the `log` command to see the version history of a file and select a version to time travel to by pressing `Enter` on a version row.
+
+```bash
+$ LOG_LEVEL=error go run cmd/op/main.go log -file db.duckdb
+```
+
+A new snapshot (version) is created every time you checkpoint a DuckDB database. Try running the following command:
+
+```bash
+$ duckdb /tmp/fuse/db.duckdb -c "CREATE TABLE test (id INTEGER, data TEXT); INSERT INTO test (id, data) VALUES (1, 'data1'), (2, 'data2'); CHECKPOINT; INSERT INTO test (id, data) VALUES (3, 'data3'), (4, 'data4'); CHECKPOINT;"
+```
+
+You should now see two versions listed in the logs. Keep in mind that you won't be able to checkpoint new writes to the database while time traveling.
+
 ## Status
 
 This project is currently in development. Some of planned features are:
 
 - [x] Use PostgreSQL for metadata and data persistence
 - [x] Use S3 for data storage instead of Postgres
-- [ ] Time travel: be able to query the database from old versions
+- [x] Time travel: be able to query the database from old versions
 - [ ] Creating new databases from a specific point in time (sharing data with zero copy)
 - [ ] Merging of snapshot layers
 - [ ] Garbage collection of snapshot layers

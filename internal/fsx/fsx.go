@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -253,8 +254,8 @@ func (dir Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 // checkValidExtension checks if the file has a valid extension (.duckdb or .duckdb.wal)
 func checkValidExtension(filename string) bool {
 	return filename == "duckdb.wal" || filename == "duckdb" || filename == "tmp" ||
-		(len(filename) > 0 && (filename[0] != '.' && (filename[len(filename)-7:] == ".duckdb" ||
-			filename[len(filename)-11:] == ".duckdb.wal")))
+		(len(filename) > 0 && (filename[0] != '.' && (strings.HasSuffix(filename, ".duckdb") ||
+			strings.HasSuffix(filename, ".duckdb.wal"))))
 }
 
 type File struct {
@@ -368,15 +369,13 @@ func (f *File) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 }
 
 func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	f.log.Debug("Writing to file", "name", f.name, "size", len(req.Data), "offset", req.Offset, "fileFlags", req.FileFlags)
-
 	if !checkValidExtension(f.name) {
 		f.log.Error("File has invalid extension", "name", f.name)
 		return syscall.EINVAL
 	}
 
 	if wal.IsWALFile(f.name) {
-		f.log.Debug("Writing WAL file", "name", f.name)
+		f.log.Info("Writing WAL file", "name", f.name, "size", len(req.Data), "offset", req.Offset, "flags", req.FileFlags)
 		bytesWritten, err := f.wm.Write(f.name, req.Data, uint64(req.Offset))
 		if err != nil {
 			f.log.Error("Failed to write WAL file", "name", f.name, "error", err)
@@ -391,9 +390,14 @@ func (f *File) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 		return nil
 	}
 
+	f.log.Info("Writing to database file", "name", f.name, "size", len(req.Data), "offset", req.Offset, "flags", req.FileFlags)
 	err := f.sm.WriteFile(ctx, f.name, req.Data, uint64(req.Offset))
 	if err != nil {
 		f.log.Error("Failed to write data", "name", f.name, "error", err)
+		// Check if this is a read-only error due to head being set
+		if strings.Contains(err.Error(), "read-only mode because a head is set") {
+			return syscall.EROFS // Return read-only filesystem error
+		}
 		return fmt.Errorf("failed to write data: %v", err)
 	}
 
